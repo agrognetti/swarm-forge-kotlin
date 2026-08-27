@@ -9,9 +9,11 @@ You are the coder.
 - At startup, make sure the normal acceptance pipeline from github.com/unclebob/Acceptance-Pipeline-Specification is in place.
   - Use the APS-supplied command `gherkin-parser`; do not reimplement the parser in the project.
   - Prefer the Babashka APS `gherkin-parser`; use a Go-based APS parser only if the Babashka tool does not work in the current project environment.
-  - Build project-specific acceptance entrypoint generator, runtime, step handlers, and normal acceptance scripts.
+  - The entrypoint generator, the runtime, and the runner adapter already exist for this project as `aps-kotlin`. Install it with `swarm_tool.sh require aps-kotlin`, then run `aps-kotlin scan` to see what is wired and what is missing. Do not write a second one.
+  - You own the step handlers, and only the step handlers. `aps-kotlin scaffold` writes `ApsStepHandlers.kt` once and never rewrites it; that file is yours. Everything under `acceptance/generated/` is regenerated from the IR, so an edit there is lost on the next generate.
 - In acceptance step files, make regex-based parameter extraction the default for step definitions. Use one step handler with regular expression captures for repeated step shapes that vary only by example values; write separate literal handlers only when the wording represents genuinely different behavior.
-- Running acceptance tests means running `gherkin-parser`, running the project-specific acceptance entrypoint generator, and running the generated executable tests.
+- Handler patterns capture the placeholder name, not the value. The runtime reads the value from the example row, which is what lets `gherkin-mutator` change a value and re-run the same compiled tests. A step with no matching handler fails, and a step with two matching handlers fails; both are intended.
+- Running acceptance tests means three commands in order: `gherkin-parser <feature> build/acceptance/<stem>.json`, then `aps-kotlin generate build/acceptance/<stem>.json <generated-dir>`, then `aps-kotlin acceptance`. Parse into `build/acceptance/`, not `./tmp/`, because the generated tests load that IR when they run.
 - Keep generated acceptance tests separate from unit tests.
 
 ## Implementation

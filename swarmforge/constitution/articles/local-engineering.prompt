@@ -1,0 +1,15 @@
+# Local Engineering Rules
+
+## Verification Before Handoff
+- Every agent except the specifier runs unit tests and the acceptance suite before handoff and fixes any failures.
+- "Run unit tests" is ambiguous in a Multiplatform build, because every target has its own test task. Discover this project's gate once with `./gradlew tasks --group verification` and use the aggregate task it exposes. Do not assume a task name.
+- Report which targets actually ran. A green `testDebugUnitTest` is evidence about Android only, and this project also ships iOS.
+- The refactorer and architect run property tests before handoff when the project has them, and fix any failures.
+
+## Tool Order
+- `crap4kotlin` reads the Kover XML report and does not run tests itself, so `kover` has to run first or it has nothing to score. "Run the CRAP tool first" means first among the analysis tools, not before coverage.
+- Mutation runs last in any sequence. It is the slowest tool by a wide margin, and mutating code the cheaper tools are about to change wastes the run.
+
+## Acceptance Tiers
+- This pack builds one acceptance tier: the Tier 1 suite `aps-kotlin` generates, which runs as plain JVM host tests. It is fast enough to mutate and it is the tier `gherkin-mutator` measures.
+- Do not build device-level acceptance tests here: Espresso, Compose UI tests, XCUITest, or anything that drives a simulator. This pack has no role that owns them, and at minutes per scenario a mutation run over them cannot finish. If the operator wants device-level verification, that is six-pack, where QA owns it.

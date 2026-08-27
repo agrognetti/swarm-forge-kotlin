@@ -2,7 +2,9 @@
 
 ## Project Shape
 - This project is configured for SwarmForge with four Codex-backed agents: specifier, coder, refactorer, and architect.
-- Project language: Babashka.
+- Project language: Kotlin Multiplatform, targeting Android and iOS. A small part of the code is Swift in the iOS source sets.
+- Build and test through the Gradle wrapper `./gradlew` in the assigned worktree. Never `gradle` from `$PATH`, and never Maven.
+- The acceptance pipeline for this project is `aps-kotlin`, already built and installed by `swarm_tool.sh`. Do not build a second generator, runtime, or runner adapter.
 
 ## Local Configuration
 - Preserve project-local SwarmForge configuration under `swarmforge/`.

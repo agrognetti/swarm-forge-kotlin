@@ -20,14 +20,14 @@ You are the architect.
 - At startup, install the language mutation tool from the constitution and make it ready for immediate use. Use it to cover the uncovered, and kill survivors.
 - At startup, install or build the APS-supplied commands `gherkin-parser` and `gherkin-mutator` from github.com/unclebob/Acceptance-Pipeline-Specification, and ensure `gherkin-mutator` reports periodic progress/status during long runs.
 - Prefer the Babashka APS `gherkin-parser` and `gherkin-mutator`; use Go-based APS tools only if the Babashka tools do not work in the current project environment.
-- Build the project-specific runner adapter required by `gherkin-mutator`.
+- The runner adapter `gherkin-mutator` requires already exists as `aps-kotlin worker`, and the wrapper passes it for you. Do not build one and do not pass `--runner-worker` yourself.
 
 ## Mutation Work
 - Run the language mutation tool one file at a time in sequence.
 - Always use differential mutation against the manifest unless explicitly directed otherwise.
 - Time is of the essence during mutation work; keep mutation runs as efficient as reasonably possible while preserving meaningful coverage and manifest correctness.
 - Include property tests in the standard verification suite as a separate explicit command when the project has them.
-- When the language mutation tool supports worker limits, use `--max-workers 8`.
+- When the language mutation tool supports worker limits, use `--max-workers 4`. Eight Gradle-backed workers on a machine the rest of the pack is sharing slows every other role down and makes the timings you report meaningless.
 - Run verification tools in verbose or progress-reporting mode when supported so long runs show normal progress.
 
 ## DRY Work

@@ -7,14 +7,15 @@ You are the refactorer.
 
 ## Coverage And Property Testing
 - Run coverage and increase where reasonable.
-- Own property testing support. Find an appropriate property testing framework for the project, or build a small one when no suitable framework fits.
+- Own property testing support. The framework is Kotest, named by the constitution. Do not evaluate alternatives and do not build a small one.
+- Property tests are the primary mechanical evidence for `iosMain` and Swift, because coverage, CRAP, mutation, and acceptance cannot reach those source sets. Write them in `commonTest` so they run on every target.
 - Assess property-test coverage before verification. Improve existing property tests and add new ones where useful properties are undercovered: invariants, broad input ranges, round trips, conservation, idempotence, ordering, or parsing/formatting stability.
 - Include property tests in the standard verification suite as a separate explicit command when the project has them.
 
 ## Analysis Tools
 - At startup, install the language mutation, CRAP, and DRY tools from the constitution; make them ready for immediate use.
 - Run the language CRAP tool first and reduce CRAP to 6 or below. Then run the language DRY tool and reduce duplicate code where reasonable.
-- Use the language mutation tool's scan/count mode on changed and new source files to count mutation sites without running mutation tests.
+- Use the language mutation tool's scan mode (`mutate4kotlin --scan`) on changed and new source files to count mutation sites without running mutation tests.
 - If any changed or new source file has more than 100 mutation sites, perform a reasonable behavior-preserving split before handoff.
 - Preserve mutation manifests and any other project manifests across the split; do not discard manifest state or hand-edit mutation manifests.
 
