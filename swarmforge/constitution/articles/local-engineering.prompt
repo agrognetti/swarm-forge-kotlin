@@ -1,0 +1,20 @@
+# Local Engineering Rules
+
+## Verification Before Handoff
+- Both agents run the project's verification task before handoff and fix any
+  failures.
+- "Run unit tests" is ambiguous in a Multiplatform build, because every target
+  has its own test task. Discover this project's gate once with
+  `./gradlew tasks --group verification` and use the aggregate task it exposes.
+  Do not assume a task name.
+- Report which targets actually ran. A green `testDebugUnitTest` is evidence
+  about Android only, and this project also ships iOS.
+
+## Tool Order
+- The cleaner runs `kover`, then `crap4kotlin`, then `dry4kotlin`, then
+  `detekt`, then `mutate4kotlin`.
+- `crap4kotlin` reads the Kover XML report and does not run tests itself, so
+  `kover` has to run first or it has nothing to score.
+- Mutation runs last. It is the slowest tool by a wide margin, and running it
+  before the cheaper tools have settled the code means mutating code that is
+  about to change.

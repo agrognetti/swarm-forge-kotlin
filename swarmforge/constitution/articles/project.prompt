@@ -4,7 +4,10 @@
 - This project is configured for SwarmForge with two Codex-backed agents:
   coder and cleaner.
 - The coder is the master worktree role.
-- Project language: Babashka.
+- Project language: Kotlin Multiplatform, targeting Android and iOS. A small
+  part of the code is Swift in the iOS source sets.
+- Build and test through the Gradle wrapper `./gradlew` in the assigned
+  worktree. Never `gradle` from `$PATH`, and never Maven.
 
 ## Local Configuration
 - Preserve project-local SwarmForge configuration under `swarmforge/`.
@@ -15,7 +18,14 @@
 - The cleaner receives coder handoffs in batch mode.
 - Do not create or use Gherkin, IR, acceptance tests, Gherkin mutation, or
   property tests.
-- Use unit tests and language-local verification only.
+- Use unit tests and language-local verification only. `aps-kotlin`,
+  `gherkin-parser`, `ir-dry-checker`, and `gherkin-mutator` are not part of this
+  pack; do not install or run them.
+- Unit tests are the only behavioral evidence this pack produces, and in a
+  Multiplatform project that makes the source set they live in a decision.
+  Default to `commonTest` so a test runs on every target. Put a test in
+  `androidUnitTest` or `iosTest` only for behavior that is genuinely
+  platform-specific.
 
 ## Handoffs
 - Prefer terse, explicit handoffs that report state and request
