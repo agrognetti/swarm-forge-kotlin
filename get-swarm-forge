@@ -81,6 +81,16 @@ for shared_article in engineering.prompt workflow.prompt handoffs.prompt; do
          "swarmforge/constitution/articles/$shared_article"
 done
 
+# `swarm` treats swarmforge/scripts/shared-articles as the marker that says the
+# scripts directory is already populated, and when the marker is absent it deletes
+# swarmforge/scripts and re-downloads it from its own default archive. That default
+# is upstream, so without this marker the very first ./swarm run replaces this
+# fork's Kotlin tools with upstream's Clojure ones, leaving a project whose
+# constitution names mutate4kotlin and whose swarm_tool.sh has never heard of it.
+# Write the marker exactly as swarm would, so the self-heal never fires here.
+mkdir -p swarmforge/scripts/shared-articles
+cp -R "$base_dir/swarmforge/constitution/articles/." swarmforge/scripts/shared-articles/
+
 # The list of untracked build inputs the launcher copies into each worktree.
 # Installed rather than left to the operator because `rm -rf swarmforge` above
 # removes it on every re-install: like the constitution articles, it is
