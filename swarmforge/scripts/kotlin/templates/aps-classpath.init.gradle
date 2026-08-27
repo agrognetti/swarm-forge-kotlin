@@ -1,0 +1,54 @@
+// Injected with --init-script by `aps-kotlin worker`.
+//
+// It adds one read-only reporting task and changes nothing else about the build.
+// No project file is touched, so a role that does not own the build can still
+// run acceptance mutation.
+//
+// Why this exists: gherkin-mutator runs one test JVM per mutation. Driving each
+// of those through Gradle would mean dozens of sequential Gradle invocations,
+// and the constitution forbids running two at once in the same worktree. So the
+// worker asks Gradle once for the test runtime classpath, then launches the test
+// JVMs itself.
+//
+// Output, one file per project, tab separated:
+//     <test task path>\t<test class dirs>\t<runtime classpath>
+//
+// The task depends on the Test tasks' classpath and class directories rather
+// than on the Test tasks themselves: that compiles the tests without running
+// them.
+
+def outDirProperty = System.getProperty("aps.classpath.dir")
+
+gradle.allprojects { project ->
+    project.tasks.register("apsDumpTestClasspath") { reportTask ->
+        reportTask.group = "verification"
+        reportTask.description =
+            "Reports the runtime classpath of every Test task for the APS runner adapter."
+
+        reportTask.dependsOn({
+            project.tasks.withType(org.gradle.api.tasks.testing.Test).collect { testTask ->
+                [testTask.classpath, testTask.testClassesDirs]
+            }.flatten()
+        })
+
+        reportTask.doLast {
+            if (outDirProperty == null) {
+                throw new org.gradle.api.GradleException(
+                    "apsDumpTestClasspath needs -Daps.classpath.dir=<directory>")
+            }
+            def outDir = new File(outDirProperty)
+            outDir.mkdirs()
+            def stem = project.path == ':' ? 'root' : project.path.replace(':', '_').replaceFirst('^_', '')
+            def separator = File.pathSeparator
+            def lines = new StringBuilder()
+            project.tasks.withType(org.gradle.api.tasks.testing.Test).each { testTask ->
+                lines.append(testTask.path).append('\t')
+                    .append(testTask.testClassesDirs.files.collect { it.absolutePath }.join(separator))
+                    .append('\t')
+                    .append(testTask.classpath.files.collect { it.absolutePath }.join(separator))
+                    .append('\n')
+            }
+            new File(outDir, "${stem}.tsv").text = lines.toString()
+        }
+    }
+}

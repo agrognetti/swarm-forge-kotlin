@@ -1,54 +1,92 @@
 # Engineering Rules
 
 ## Startup Tools
-- On startup, procure the latest version of each required CRAP, mutation, and DRY tool for the project language directly from the listed `github.com/unclebob/...` repositories and get each one ready to run.
-- Resolve each listed repository at its latest available upstream version before installing or building it.
-- Do not rely on stale cached, vendored, or preinstalled copies when a fresh GitHub install/build is possible in the current environment.
+- On startup, procure each required CRAP, mutation, and DRY tool for the project language and get it ready to run.
+- Install every constitution tool with the project-local helper: `swarm_tool.sh require <tool>`. If it reports missing, run exactly `swarm_tool.sh ensure <tool>`.
+- Do not search `$HOME`, run `find`, or clone tool repositories into `./tmp`.
+- Do not rely on stale cached or vendored copies when the helper can install a fresh one.
 - Language tool table:
-  - Go: install with `go install`; mutation `github.com/unclebob/mutate4go`, CRAP `github.com/unclebob/crap4go`, DRY `github.com/unclebob/dry4go`.
-  - Clojure: install with Clojure CLI/deps.edn; mutation `github.com/unclebob/clj-mutate`, CRAP `github.com/unclebob/crap4clj`, DRY `github.com/unclebob/dry4clj`.
-  - Java: install with Maven (`mvn`); mutation `github.com/unclebob/mutate4java`, CRAP `github.com/unclebob/crap4java`, DRY `github.com/unclebob/dry4java`.
+  - Kotlin (JVM and Android source sets): CRAP `crap4kotlin`, DRY `dry4kotlin`, mutation `mutate4kotlin`, coverage `kover`, complexity and static analysis `detekt`, acceptance entry points and acceptance runner `aps-kotlin`.
+  - Swift source sets: DRY `dry4kotlin` (its Swift pass). No CRAP, coverage, or mutation tool is available for Swift in this project.
+- `crap4kotlin`, `dry4kotlin`, `mutate4kotlin`, `kover`, `detekt`, and `aps-kotlin` are constitution tools of this fork, installed by `swarm_tool.sh`. They are not project-local proxies.
+
+## Measurability Boundaries
+These limits are properties of the Kotlin Multiplatform toolchain, not defects to fix. Do not attempt to work around them, and do not ask the operator to remove them.
+
+- `kover` collects coverage from JVM and Android host tests only. Kotlin/Native and JS targets are not supported. Coverage therefore covers `commonMain` (exercised through Android host tests) and `androidMain`. It cannot cover `iosMain`.
+- `crap4kotlin` derives CRAP from the Kover report, so it has exactly the same reach as `kover`.
+- `mutate4kotlin` mutates JVM bytecode through Pitest. Its reach is `commonMain` and `androidMain` compiled for Android host tests. It cannot mutate `iosMain` or Swift.
+- `detekt` analyses every Kotlin source set, including `iosMain`. It does not analyse Swift.
+- `dry4kotlin` analyses every Kotlin source set and every Swift source set. It reports verbatim duplication only. Its underlying CPD engine can normalize identifiers and literals for Java, but not for Kotlin or Swift, so two blocks that differ only in variable names will not be reported. A clean `dry4kotlin` report is therefore evidence of no copy-paste duplication, not evidence of no duplication. Read the code for structural repetition; do not treat the tool's silence as a DRY guarantee.
+- `aps-kotlin` generates and runs the Tier 1 acceptance suite as JVM unit tests. Its reach is `commonMain` and `androidMain`. It cannot execute `iosMain` or Swift, so the Gherkin specification is verified against the shared implementation, not against the iOS one.
+- Kotest property tests run on all targets, including iOS.
+- For `iosMain` and Swift, the available mechanical evidence is `detekt`, `dry4kotlin`, unit tests, and property tests. Report that scope honestly. Never claim coverage, CRAP, mutation, or acceptance results for code those tools cannot reach.
 
 ## Language Defaults
-- For Clojure projects, prefer Babashka where possible.
-- For Clojure or Babashka projects, write Speclj specs, not `clojure.test`.
-- Install Speclj with `swarm_tool.sh require speclj`. If missing, `swarm_tool.sh ensure speclj`.
-- If a Speclj spec file changed, run `swarm_tool.sh require speclj-structure-check` (ensure if missing) and check the spec file before running tests.
-- For Java projects, avoid using Maven to run tests; build dedicated test runners and run those instead.
+- Build and run everything through the Gradle wrapper: `./gradlew`. Never install or invoke Maven.
+- Never run `gradle` from `$PATH`. Only `./gradlew` in the assigned worktree.
+- Place behavior in `commonMain` by default. Move code into `androidMain`, `iosMain`, or a Swift source set only when it needs a platform API.
+- Write tests in `commonTest` by default, using `kotlin.test` assertions, so they run on every target. Add tests to `androidUnitTest` or `iosTest` only for platform-specific behavior.
+- Use Kotest for property tests. Property tests are supported on all targets and are the primary mechanical evidence for `iosMain`.
+- Test suspending code with `kotlinx-coroutines-test` `runTest`. Do not use `runBlocking` in tests.
+- When adding an `expect` declaration in `commonMain`, add the matching `actual` for every configured target in the same commit. A missing `actual` breaks the whole build, not just one target.
+- Do not add Gradle targets, source sets, or Kotlin compiler plugins that the assigned task does not require.
+- Do not change the Gradle wrapper version, AGP version, or Kotlin version unless the task explicitly asks for it.
 
 ## Design And Testability
 - Work in small, reviewable increments.
 - Prefer the simplest design that supports the current behavior and leaves clear options for the next step.
 - Keep tests close to the behavior being changed.
 - Separate testable modules from environmentally unsuitable modules that open GUIs, depend on external devices, throw environment errors, emit system errors, or hang under automated tests. Maximize testable code and minimize the unsuitable boundary.
+- Android `Context`, Compose UI, iOS view controllers, and Swift interop are environmentally unsuitable boundaries. Keep policy and business rules out of them so `commonMain` stays measurable.
 - Only testable modules should participate in tools that run tests, including unit tests, acceptance tests, coverage, mutation testing, CRAP analysis, DRY analysis that invokes tests, and property tests.
 - Keep property tests separate from normal verification. Do not include property-test tags in normal unit coverage, Gherkin acceptance mutation, language mutation tools, CRAP, or coverage commands unless the role owns property-test verification or the user explicitly asks for property tests.
 
 ## Acceptance Pipeline
 - Use github.com/unclebob/Acceptance-Pipeline-Specification for Gherkin acceptance tests.
-- The Acceptance Pipeline Specification supplies `gherkin-parser`, `ir-dry-checker`, and `gherkin-mutator`. Install them with the project-local helper; do not search `$HOME` or run `find` for binaries.
+- The Acceptance Pipeline Specification supplies `gherkin-parser`, `ir-dry-checker`, and `gherkin-mutator`. These tools are language-neutral and are used unmodified. Install them with the project-local helper; do not search `$HOME` or run `find` for binaries.
 - At Tool Startup, for each required APS tool, run `swarm_tool.sh require <tool>`. If it is missing, run exactly `swarm_tool.sh ensure <tool>`.
 - Two-arg forms:
   - `gherkin-parser <feature> ./tmp/<stem>.json`
   - `ir-dry-checker <ir> ./tmp/<stem>.dry.json`
 - Prefer the Babashka APS tools for `gherkin-parser`, `ir-dry-checker`, `gherkin-mutator`, and related APS support commands.
 - Use Go-based APS tools only if the Babashka APS tools do not work in the current project environment.
-- Project-specific acceptance pipeline components are the acceptance entrypoint generator, acceptance runtime, project step handlers, runner adapter, and convenience scripts.
-- Gherkin acceptance mutation means running `gherkin-mutator` to mutate Gherkin example values.
+- This fork supplies the project-specific APS components for Kotlin as one tool, `aps-kotlin`, because the generator and the runner adapter must agree on class and method names to work at all:
+  - `aps-kotlin scan` reports what is wired and what is missing. It builds nothing. Start here.
+  - `aps-kotlin scaffold` writes the acceptance runtime and the step-handler template once.
+  - `aps-kotlin generate <ir> <generated-dir>` is the acceptance entrypoint generator.
+  - `aps-kotlin acceptance` runs the generated suite through Gradle.
+  - `aps-kotlin worker` is the runner adapter that `gherkin-mutator` drives. It is injected automatically; you do not pass `--runner-worker` yourself.
+- Parse a feature into `build/acceptance/<stem>.json`, not `./tmp/`, when the output will be generated from. The generated tests load that IR at run time, so it must still exist when they run.
+- Generated entry points are not Cucumber and must not become Cucumber. They contain no step logic, no example values, and no Gherkin parsing: they name a scenario and an example row and hand over to the runtime, which loads the IR. That is what lets `gherkin-mutator` mutate an example value and re-run the same compiled tests. A runner that re-parsed the `.feature` file would be a second source of truth and would break mutation.
+- Never edit any file under `acceptance/generated/`. It is regenerated from the IR and carries a do-not-edit banner. Step behavior belongs in `ApsStepHandlers.kt`, which is project-owned and which `aps-kotlin` never rewrites.
+- Handler patterns capture the placeholder name, not the value, and read the value from the example row. A step with no matching handler fails, and a step with two matching handlers fails. Both are intended: an unimplemented specification must not report success, and an ambiguous one must not be resolved by chance.
+- Tier 1 acceptance tests are plain JVM unit tests in a host test source set. They exercise `commonMain` and `androidMain`, they are fast enough to mutate, and they are the tier `gherkin-mutator` measures. The `hardender` owns them.
+- Tier 2 acceptance tests are device-level: Espresso, Compose UI, XCUITest, iOS simulator. They take minutes per scenario, so a mutation run over them cannot complete. Do not run Gherkin acceptance mutation against them. The `QA` role owns them, and the same `.feature` files are their source.
+- Gherkin acceptance mutation means running `gherkin-mutator` to mutate Gherkin example values. It does not mean mutating Kotlin source. That is `mutate4kotlin`.
+- A scenario with no `Examples` table has no values to mutate, so mutation cannot say anything about it. `aps-kotlin generate` names those scenarios. Add examples if the behavior deserves acceptance mutation; do not report an unmutatable scenario as mutation-verified.
 - Gherkin acceptance mutation runs must report periodic progress/status so agents can distinguish normal long-running work from a hang.
 
 ## Verification
-- Before running language, build, or test commands, prefer project-local cache/configuration paths inside the assigned worktree. Avoid default cache locations that write outside the project and may trigger sandbox or permission restrictions.
-- Run constitution tools one at a time. Do not run CRAP, DRY, coverage, language mutation, Gherkin mutation, or structure-check concurrently.
+- Run constitution tools one at a time. Do not run CRAP, DRY, coverage, language mutation, Gherkin mutation, or detekt concurrently.
+- Never run two Gradle invocations at the same time. Gradle serializes on its own project lock, and a second invocation either blocks for a long time or fails. One `./gradlew` at a time in your worktree.
+- Do not redirect the Gradle user home, the Kotlin/Native `~/.konan` directory, or the Gradle build cache into the worktree. Those caches are large and shared, and a project-local copy will re-download the full Android and Kotlin/Native toolchain. Use the shared defaults.
+- Do not pass `--no-daemon`. Do not run `./gradlew --stop` unless a build is genuinely wedged, because it kills the daemons other roles are using.
+- Write scratch output under `./tmp/` in the assigned worktree. Gradle's own `build/` directories are managed by Gradle; do not hand-edit them.
 - Tools that take a worker limit must use `--max-workers 4` or `--workers 4`.
 - Function mutation is differential against the source manifest. Do not pass `--mutate-all`.
 - Gherkin mutation is differential against the feature manifest (`--level hard`). Do not pass `--level full`.
 - Run acceptance generation and acceptance tests sequentially.
-- Avoid running whole-suite language test commands concurrently with acceptance generation.
+- Avoid running whole-suite Gradle test commands concurrently with acceptance generation.
 - Run the relevant local verification command before handoff whenever the project has one.
+- A build that fails to configure is not a test result. Fix configuration before reporting any coverage, CRAP, DRY, or mutation number.
 
 ## Guardrails
-- Do not invent project-local CRAP, DRY, mutation, or coverage proxies. Install and run the constitution tools (`crap4clj` with cloverage, `dry4clj`, `clj-mutate`, speclj, or the language table). Do not treat a homegrown `bb crap` / `bb coverage` / `bb mutation-count` task as those tools.
+- Do not invent project-local CRAP, DRY, mutation, or coverage proxies. Install and run the constitution tools (`crap4kotlin`, `dry4kotlin`, `mutate4kotlin`, `kover`, `detekt`, or the language table). Do not treat a homegrown Gradle task, shell script, or `bb` task that counts lines, greps for asserts, or estimates complexity as those tools.
+- Do not report a CRAP, DRY, coverage, or mutation number you did not obtain from the corresponding constitution tool in this run.
+- If a constitution tool cannot run, report that it could not run and why. Do not substitute an estimate, and do not silently skip the check.
+- `mutate4kotlin` reports surviving mutants that Kotlin's compiler-generated code makes unkillable, such as null-check intrinsics and inlined function copies. Add such a mutant to the tool's exclusion list with a one-line reason instead of writing a test that exists only to kill it. Never disable mutation reporting wholesale to make a report clean.
 - Do not edit mutation testing or Gherkin acceptance mutation manifests by hand; allow approved mutation tools to update those manifests as part of their normal runs.
 - Do not commit unrelated local changes or generated artifacts unless required for the task.
+- Do not commit `local.properties`, keystores, `google-services.json`, signing config, or any other credential file, even when it is present in your worktree.
 - Before relying on an unfamiliar command, inspect local help or project documentation.

@@ -31,7 +31,13 @@
    "mutate4go" {:source "github.com/unclebob/mutate4go" :bb-task "mutate4go"}
    "crap4java" {:source "github.com/unclebob/crap4java" :bb-task "crap4java"}
    "dry4java" {:source "github.com/unclebob/dry4java" :bb-task "dry4java"}
-   "mutate4java" {:source "github.com/unclebob/mutate4java" :bb-task "mutate4java"}})
+   "mutate4java" {:source "github.com/unclebob/mutate4java" :bb-task "mutate4java"}
+   "kover" {:local "kotlin/kover.bb"}
+   "detekt" {:local "kotlin/detekt.bb"}
+   "crap4kotlin" {:local "kotlin/crap4kotlin.bb" :needs ["kover"]}
+   "dry4kotlin" {:local "kotlin/dry4kotlin.bb"}
+   "mutate4kotlin" {:local "kotlin/mutate4kotlin.bb"}
+   "aps-kotlin" {:local "kotlin/aps_kotlin.bb"}})
 
 (def usage-text
   (str "Usage:\n"
@@ -133,23 +139,53 @@
        "if [ -z \"$scan\" ]; then args+=(--max-workers 4); fi\n"
        "set -- \"${args[@]}\"\n"))
 
-(defn gherkin-rewrite-bash []
+(defn gherkin-rewrite-bash
+  "gherkin-mutator needs two things this fork can supply and the agent cannot
+  guess:
+
+    --runner-worker  is required by the specification and has no default. On
+                     Kotlin it is always `aps-kotlin worker`.
+    --generated-dir  defaults to <work-dir>/generated, which is never where a
+                     Kotlin test source set keeps the generated entry points.
+                     aps-kotlin resolves the real directory.
+
+  Both are only injected when absent, so an explicit flag still wins. --level
+  full is downgraded to hard because a full run mutates every example value in
+  every scenario and, at roughly half a second per mutation, turns a review into
+  an hour. --workers is pinned so one agent cannot saturate the machine the rest
+  of the swarm shares."
+  []
   (str "args=()\n"
+       "have_worker=\n"
+       "have_generated=\n"
        "while [ $# -gt 0 ]; do\n"
        "  case \"$1\" in\n"
        "    --level)\n"
        "      if [ \"${2:-}\" = full ]; then args+=(--level hard); else args+=(\"$1\" \"$2\"); fi\n"
        "      shift; [ $# -gt 0 ] && shift ;;\n"
        "    --workers) shift; [ $# -gt 0 ] && shift ;;\n"
+       "    --runner-worker) have_worker=1; args+=(\"$1\"); shift ;;\n"
+       "    --generated-dir) have_generated=1; args+=(\"$1\"); shift ;;\n"
        "    *) args+=(\"$1\"); shift ;;\n"
        "  esac\n"
        "done\n"
+       "if [ -z \"$have_worker\" ]; then args+=(--runner-worker \"aps-kotlin worker\"); fi\n"
+       "if [ -z \"$have_generated\" ]; then\n"
+       "  generated=$(aps-kotlin generated-dir 2>/dev/null)\n"
+       "  if [ -n \"$generated\" ]; then\n"
+       "    args+=(--generated-dir \"$generated\")\n"
+       "  else\n"
+       "    echo \"gherkin-mutator: could not locate the generated acceptance tests.\" >&2\n"
+       "    echo \"  Run 'aps-kotlin scan' to see what is missing, or pass\" >&2\n"
+       "    echo \"  --generated-dir <dir> explicitly.\" >&2\n"
+       "  fi\n"
+       "fi\n"
        "args+=(--workers 4)\n"
        "set -- \"${args[@]}\"\n"))
 
 (defn rewrite-bash [tool]
   (cond
-    (#{"clj-mutate" "mutate4go" "mutate4java"} tool) (mutate-rewrite-bash)
+    (#{"clj-mutate" "mutate4go" "mutate4java" "mutate4kotlin"} tool) (mutate-rewrite-bash)
     (= "gherkin-mutator" tool) (gherkin-rewrite-bash)
     :else ""))
 
@@ -166,6 +202,22 @@
      target
      (str (rewrite-bash tool)
           "exec bb --config " (sq config) " " bb-task " \"$@\"\n"))))
+
+(defn local-script-path [root relative]
+  (let [path (fs/path root "swarmforge" "scripts" relative)]
+    (when-not (fs/exists? path)
+      (exit! 1 (str "Fork tool script is missing: " path
+                    "\nThis tool ships in swarmforge/scripts/ on the fork's base branch."
+                    "\nRe-run get-swarm-forge to restore it.")))
+    path))
+
+(defn write-local-wrapper! [root tool relative]
+  (let [target (wrapper-path root tool)
+        script (local-script-path root relative)]
+    (write-wrapper!
+     target
+     (str (rewrite-bash tool)
+          "exec bb " (sq (str script)) " \"$@\"\n"))))
 
 (defn edn-paths [paths]
   (str/join " " (map pr-str (or paths []))))
@@ -194,10 +246,11 @@
   (let [spec (tool-spec tool)
         root (project-root)
         name (canonical-tool tool)
-        target (if-let [bb-task (:bb-task spec)]
-                 (write-bb-wrapper! root name bb-task
-                                    (ensure-source! root (:source spec)))
-                 (write-mvn-wrapper! root name spec))]
+        target (cond
+                 (:local spec) (write-local-wrapper! root name (:local spec))
+                 (:bb-task spec) (write-bb-wrapper! root name (:bb-task spec)
+                                                    (ensure-source! root (:source spec)))
+                 :else (write-mvn-wrapper! root name spec))]
     (println "INSTALLED:" name (str target))))
 
 (defn ensure-tool! [tool]
