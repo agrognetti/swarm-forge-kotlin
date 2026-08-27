@@ -986,9 +986,11 @@
     (write-file (fs/path root ".swarmforge/roles.tsv")
                 (str "coder\tmaster\t" root "\tsession\tCoder\tcodex\ttask\n"))
     (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    ;; Quoted because this is a shell string, not an argument vector. A checkout
+    ;; path containing a space would otherwise be split and bb would never start.
     (run {:dir root :ok? false}
          "sh" "-c"
-         (str "bb " (script "handoffd.bb") " " root " >/dev/null 2>&1 &"))
+         (str "bb '" (script "handoffd.bb") "' '" root "' >/dev/null 2>&1 &"))
     (Thread/sleep 1500)
     (let [pid-file (fs/path root ".swarmforge/daemon/handoffd.pid")]
       (is (fs/exists? pid-file))
