@@ -4,6 +4,7 @@
 - Every agent except the specifier runs unit tests and the acceptance suite before handoff and fixes any failures.
 - "Run unit tests" is ambiguous in a Multiplatform build, because every target has its own test task. Discover this project's gate once with `./gradlew tasks --group verification` and use the aggregate task it exposes. Do not assume a task name.
 - Report which targets actually ran. A green `testDebugUnitTest` is evidence about Android only, and this project also ships iOS.
+- In a Multiplatform build the source set a test lives in is a decision, not a detail. Default to `commonTest` so the test runs on every target, and reach for `androidUnitTest` or `iosTest` only when the test exercises genuinely platform-specific code.
 - The refactorer and architect run property tests before handoff when the project has them, and fix any failures.
 
 ## Tool Order
