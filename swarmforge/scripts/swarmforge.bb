@@ -470,10 +470,18 @@
          "- Run the acceptance suite with `aps-kotlin acceptance`.\n"
          "- The Tier 1 acceptance suite is plain JVM unit tests and is the tier `gherkin-mutator` measures. Device-level acceptance (Espresso, XCUITest) is a separate tier and is not mutated.\n")))
 
-(defn tool-startup-section [role last-role?]
-  (let [tools (get role-required-tools role [])]
+;; A pack with no specifier has nobody to write Gherkin, and two-pack forbids it
+;; outright. Telling its agents to install the acceptance pipeline would put the
+;; startup instructions in direct conflict with the pack's own project article,
+;; so the acceptance tools are announced only when the pack has a specifier.
+(defn pack-uses-acceptance? [ctx]
+  (boolean (some #(= "specifier" (:role %)) (:roles ctx))))
+
+(defn tool-startup-section [role last-role? acceptance?]
+  (let [tools (if acceptance? (get role-required-tools role []) [])]
     (str "## Tool Startup\n\n"
-         "- Do not search `$HOME` or run `find` for APS tools.\n"
+         (when acceptance?
+           "- Do not search `$HOME` or run `find` for APS tools.\n")
          (require-ensure-lines tools)
          (parse-dry-check-lines tools)
          (aps-kotlin-lines tools)
@@ -488,9 +496,13 @@
          "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
          "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. For a batch, that name is the top item. The helper fills `task:` from the in-process batch, else the sender-lane card.\n"
          "- Do not invent a name or hunt `sessions.tsv`.\n"
-         "- Constitution tools: `swarm_tool.sh require kover` (also crap4kotlin, dry4kotlin, detekt, mutate4kotlin, aps-kotlin, gherkin-parser, ir-dry-checker, gherkin-mutator). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies and do not add Gradle plugins by hand to obtain a measurement; the tools apply what they need.\n"
-         "- Run constitution tools one at a time. Two Gradle invocations in one worktree at once corrupt each other's daemon and produce numbers you cannot trust. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`, no `--level full`.\n"
-         "- Do not clone those repos into `./tmp`.\n"
+         "- Constitution tools: `swarm_tool.sh require kover` (also crap4kotlin, dry4kotlin, detekt, mutate4kotlin"
+         (when acceptance? ", aps-kotlin, gherkin-parser, ir-dry-checker, gherkin-mutator")
+         "). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies and do not add Gradle plugins by hand to obtain a measurement; the tools apply what they need.\n"
+         "- Run constitution tools one at a time. Two Gradle invocations in one worktree at once corrupt each other's daemon and produce numbers you cannot trust. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`"
+         (when acceptance? ", no `--level full`")
+         ".\n"
+         "- Do not clone tool repositories into `./tmp`.\n"
          "- If merge_and_process.sh or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"
          "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
          "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
@@ -507,12 +519,12 @@
 (defn last-pack-role? [ctx role]
   (= role (:role (last (:roles ctx)))))
 
-(defn write-agent-instruction-file! [role prompt-file last-role?]
+(defn write-agent-instruction-file! [role prompt-file last-role? acceptance?]
   (spit (str prompt-file)
         (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
              "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
              "\n"
-             (tool-startup-section role last-role?))))
+             (tool-startup-section role last-role? acceptance?))))
 
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
@@ -557,7 +569,8 @@
                   " && export PATH=" (sq (str tool-bin)) ":" (sq (str role-script-dir)) ":$PATH"
                   " && cd " (sq (str role-worktree))
                   " && ")]
-    (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role))
+    (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role)
+                                   (pack-uses-acceptance? ctx))
     (cond-> (str base
                 (case agent
                   "claude" (str (alt-screen-env agent row) "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
