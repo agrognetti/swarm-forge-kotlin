@@ -1,0 +1,58 @@
+# Ignored build inputs to copy from the main checkout into every agent worktree.
+#
+# WHY THIS FILE EXISTS
+#
+# `git worktree add` materializes tracked files only. A Kotlin or Android build
+# also needs inputs that are deliberately untracked, and the most common one is
+# local.properties: without its sdk.dir line Gradle cannot find the Android SDK,
+# so every agent worktree fails to build for a reason that has nothing to do with
+# the code under review.
+#
+# The launcher copies each entry below from the project root into each worktree at
+# startup. Entries are paths relative to the project root and may be glob
+# patterns. Missing entries are skipped without complaint, because most projects
+# need only some of them.
+#
+# HOW TO USE IT
+#
+# get-swarm-forge installs this file into <project>/swarmforge/worktree-files.txt,
+# and the launcher reads it from there. When it is missing the launcher falls back
+# to a built-in default list that matches this one, so a plain KMP project needs
+# no configuration at all.
+#
+# Edit it in the fork, not in the installed copy. get-swarm-forge runs
+# `rm -rf swarmforge` before installing, so a change made in a project is lost on
+# the next install. That is true of the constitution articles as well.
+#
+# WHAT NOT TO PUT HERE
+#
+# Nothing that belongs in git. This list exists for untracked local
+# configuration. Being untracked is also what keeps these files out of commits:
+# they are absent from a fresh worktree precisely because .gitignore covers
+# them.
+
+# Android SDK location. Without this, every Gradle invocation fails.
+local.properties
+
+# Firebase / Google services configuration, per module.
+google-services.json
+*/google-services.json
+*/src/*/google-services.json
+GoogleService-Info.plist
+*/GoogleService-Info.plist
+
+# Signing material. Required by release variants and by anything that reads
+# signingConfigs at configuration time.
+keystore.properties
+signing.properties
+*.jks
+*.keystore
+
+# Local environment overrides read by the build or by tests.
+.env
+.env.local
+gradle-local.properties
+
+# CocoaPods and Swift package resolution state for the iOS target. Regenerating
+# these inside a worktree costs minutes and can drift from the main checkout.
+*/Podfile.lock

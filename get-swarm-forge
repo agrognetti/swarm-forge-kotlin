@@ -2,7 +2,11 @@
 set -euo pipefail
 
 valid_agents=(claude codex copilot grok)
-default_repo_url="https://github.com/unclebob/swarm-forge"
+
+# The Kotlin fork, not upstream. Installing from unclebob/swarm-forge would give
+# this project the Clojure constitution and the Clojure tool table, and every
+# agent would then try to install crap4clj into a Gradle build.
+default_repo_url="https://github.com/agrognetti/swarm-forge-kotlin"
 
 usage() {
   echo "usage: get-swarm-forge <branch> [agent] [extra-cli-args...]" >&2
@@ -76,6 +80,14 @@ for shared_article in engineering.prompt workflow.prompt handoffs.prompt; do
     && cp "$base_dir/swarmforge/constitution/articles/$shared_article" \
          "swarmforge/constitution/articles/$shared_article"
 done
+
+# The list of untracked build inputs the launcher copies into each worktree.
+# Installed rather than left to the operator because `rm -rf swarmforge` above
+# removes it on every re-install: like the constitution articles, it is
+# customized in the fork, not in the installed copy. The launcher falls back to a
+# built-in default list when this file is absent.
+[[ -f "$base_dir/swarmforge/worktree-files.txt" ]] \
+  && cp "$base_dir/swarmforge/worktree-files.txt" swarmforge/worktree-files.txt
 
 cp "$pack_dir/swarm" swarm
 cp "$pack_dir/swarmforge/swarmforge.conf" swarmforge/swarmforge.conf

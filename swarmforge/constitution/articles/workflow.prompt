@@ -7,6 +7,12 @@
 - Do not inspect, diff, merge, or base work on another branch unless that branch is specifically named in a handoff or explicit user instruction.
 - Do not run `./swarm` from an agent worktree to repair helper scripts. If handoff helper scripts are missing from PATH, stop and report the startup failure.
 
+## Worktree Build Environment
+- `git worktree add` materializes only tracked files. Ignored build inputs such as `local.properties`, `google-services.json`, keystores, and `.env` do not appear in a new worktree on their own.
+- The launcher copies these files from the main checkout into every worktree at startup, using the list in `swarmforge/worktree-files.txt` when the project has one and a built-in default list otherwise. Treat them as provided environment, not as your work.
+- If a Gradle build fails because such a file is missing, do not author a replacement, do not guess an SDK path, and do not commit one. Report the missing file to the operator with `pack_dashboard_request.sh clarify` and name the file.
+- Never commit these files. They are absent from a fresh worktree because `.gitignore` covers them, and a copy the launcher placed there is not yours to track.
+
 ## Announcements
 - Do not add role bylines to announcements or check-in comments.
 

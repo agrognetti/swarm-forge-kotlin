@@ -306,6 +306,59 @@
   (write-sessions-file! ctx)
   (write-roles-file! ctx))
 
+;; Untracked build inputs. `git worktree add` materializes tracked files only, so
+;; a Kotlin worktree arrives without local.properties and every Gradle invocation
+;; in it fails for a reason that has nothing to do with the code under review.
+;; Copying them is the launcher's job: an agent told to fix a missing SDK path
+;; will invent one, and an agent that decides a keystore is missing may commit a
+;; replacement.
+;;
+;; Override per project with <project>/swarmforge/worktree-files.txt. Entries are
+;; project-root-relative paths or glob patterns; missing ones are skipped, since
+;; most projects need only some of them.
+(def default-worktree-files
+  ["local.properties"
+   "google-services.json" "*/google-services.json" "*/src/*/google-services.json"
+   "GoogleService-Info.plist" "*/GoogleService-Info.plist"
+   "keystore.properties" "signing.properties" "*.jks" "*.keystore"
+   ".env" ".env.local" "gradle-local.properties"
+   "*/Podfile.lock"])
+
+(defn worktree-file-patterns [ctx]
+  (let [config (fs/path (:working-dir ctx) "swarmforge" "worktree-files.txt")]
+    (if (fs/exists? config)
+      (->> (str/split-lines (slurp (str config)))
+           (map str/trim)
+           (remove str/blank?)
+           (remove #(str/starts-with? % "#"))
+           vec)
+      default-worktree-files)))
+
+(defn copy-worktree-files! [ctx]
+  (let [root (fs/path (:working-dir ctx))
+        sources (->> (worktree-file-patterns ctx)
+                     (mapcat #(fs/glob root %))
+                     (filter fs/regular-file?)
+                     (map #(str (fs/relativize root %)))
+                     distinct
+                     sort)
+        targets (->> (:roles ctx)
+                     (map :worktree-path)
+                     (remove #(= (str %) (str (:working-dir ctx))))
+                     distinct
+                     (filter fs/directory?))]
+    (doseq [worktree targets
+            relative sources
+            :let [target (fs/path worktree relative)]]
+      (fs/create-dirs (fs/parent target))
+      (fs/copy (fs/path root relative) target {:replace-existing true}))
+    (when (and (seq sources) (seq targets))
+      (println (str green "Copied " (count sources) " untracked build input(s) into "
+                    (count targets) " worktree(s): "
+                    (str/join ", " (take 4 sources))
+                    (when (> (count sources) 4) (str ", +" (- (count sources) 4) " more"))
+                    reset)))))
+
 (defn prepare-worktrees! [ctx]
   (doseq [row (:roles ctx)
           :let [worktree-name (:worktree-name row)
@@ -314,7 +367,8 @@
           :when (not (#{"none" "master"} worktree-name))]
     (when-not (or (fs/exists? (fs/path worktree-path ".git"))
                   (fs/directory? (fs/path worktree-path ".git")))
-      (sh "git" "-C" (str (:working-dir ctx)) "worktree" "add" "--force" "-B" branch-name (str worktree-path) "HEAD"))))
+      (sh "git" "-C" (str (:working-dir ctx)) "worktree" "add" "--force" "-B" branch-name (str worktree-path) "HEAD")))
+  (copy-worktree-files! ctx))
 
 (defn prepare-handoff-dirs! [ctx]
   (doseq [row (:roles ctx)
@@ -376,15 +430,24 @@
 (def aps-tool-purpose
   {"gherkin-parser" "APS parsing"
    "ir-dry-checker" "IR DRY"
-   "gherkin-mutator" "Gherkin mutation"})
+   "gherkin-mutator" "Gherkin mutation"
+   "aps-kotlin" "APS acceptance entry points and the mutator's Kotlin runner"})
 
+;; aps-kotlin is this fork's acceptance entry point generator and runner adapter.
+;; Every role that either executes the specification or measures it needs it. The
+;; specifier does not: it writes and dry-checks the specification, and generating
+;; executables from a spec that is still being argued about is wasted work.
 (def role-required-tools
   {"specifier" ["gherkin-parser" "ir-dry-checker"]
-   "coder" ["gherkin-parser"]
-   "refactorer" ["gherkin-parser"]
-   "hardender" ["gherkin-parser" "gherkin-mutator"]
-   "architect" ["gherkin-parser" "gherkin-mutator"]
-   "QA" ["gherkin-parser"]})
+   "coder" ["gherkin-parser" "aps-kotlin"]
+   ;; two-pack and six-pack name this role "cleaner", four-pack names it
+   ;; "refactorer". Both need the acceptance suite to prove a refactor preserved
+   ;; behavior, so both are listed.
+   "refactorer" ["gherkin-parser" "aps-kotlin"]
+   "cleaner" ["gherkin-parser" "aps-kotlin"]
+   "hardender" ["gherkin-parser" "gherkin-mutator" "aps-kotlin"]
+   "architect" ["gherkin-parser" "gherkin-mutator" "aps-kotlin"]
+   "QA" ["gherkin-parser" "aps-kotlin"]})
 
 (defn require-ensure-lines [tools]
   (apply str
@@ -398,12 +461,22 @@
        (when (some #{"ir-dry-checker"} tools)
          "- Dry-check with the two-arg form: `ir-dry-checker <ir> ./tmp/<stem>.dry.json`\n")))
 
+(defn aps-kotlin-lines [tools]
+  (when (some #{"aps-kotlin"} tools)
+    (str "- `aps-kotlin scan` first. It reports what is wired and builds nothing.\n"
+         "- Generate with the two-arg form: `aps-kotlin generate <ir> <generated-dir>`. Parse the feature into `build/acceptance/<stem>.json` first, not into `./tmp/`, because the generated tests load that IR when they run.\n"
+         "- Generated entry points carry no step logic and no example values. Step behavior belongs in `ApsStepHandlers.kt`, which `aps-kotlin` never rewrites.\n"
+         "- Never edit a file under `acceptance/generated/`. It is regenerated from the IR and your edit will be lost.\n"
+         "- Run the acceptance suite with `aps-kotlin acceptance`.\n"
+         "- The Tier 1 acceptance suite is plain JVM unit tests and is the tier `gherkin-mutator` measures. Device-level acceptance (Espresso, XCUITest) is a separate tier and is not mutated.\n")))
+
 (defn tool-startup-section [role last-role?]
   (let [tools (get role-required-tools role [])]
     (str "## Tool Startup\n\n"
          "- Do not search `$HOME` or run `find` for APS tools.\n"
          (require-ensure-lines tools)
          (parse-dry-check-lines tools)
+         (aps-kotlin-lines tools)
          "- Write scratch files and handoff drafts in `./tmp/` in the assigned worktree.\n"
          "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n"
          "- Receive with `ready_for_next.sh`. Send with `swarm_handoff.sh ./tmp/<draft>`.\n"
@@ -415,8 +488,8 @@
          "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
          "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. For a batch, that name is the top item. The helper fills `task:` from the in-process batch, else the sender-lane card.\n"
          "- Do not invent a name or hunt `sessions.tsv`.\n"
-         "- Constitution tools: `swarm_tool.sh require crap4clj` (also dry4clj, clj-mutate, cloverage, speclj, speclj-structure-check, APS, or the language table). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies.\n"
-         "- Run constitution tools one at a time. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`, no `--level full`.\n"
+         "- Constitution tools: `swarm_tool.sh require kover` (also crap4kotlin, dry4kotlin, detekt, mutate4kotlin, aps-kotlin, gherkin-parser, ir-dry-checker, gherkin-mutator). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies and do not add Gradle plugins by hand to obtain a measurement; the tools apply what they need.\n"
+         "- Run constitution tools one at a time. Two Gradle invocations in one worktree at once corrupt each other's daemon and produce numbers you cannot trust. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`, no `--level full`.\n"
          "- Do not clone those repos into `./tmp`.\n"
          "- If merge_and_process.sh or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"
          "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
