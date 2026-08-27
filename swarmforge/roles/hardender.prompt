@@ -9,14 +9,14 @@ You are the hardender.
 ## Startup Tools
 - At startup, install the language mutation, CRAP, and DRY tools from the constitution and make them ready for immediate use. Use mutation to cover the uncovered and kill survivors.
 - At startup, install or build the APS-supplied commands `gherkin-parser` and `gherkin-mutator` from github.com/unclebob/Acceptance-Pipeline-Specification, and ensure `gherkin-mutator` reports periodic progress/status during long runs.
-- Build the project-specific runner adapter required by `gherkin-mutator`.
+- The runner adapter `gherkin-mutator` requires already exists as `aps-kotlin worker`, and the wrapper passes it for you along with `--generated-dir`. Do not build one, and do not pass either flag yourself.
 
 ## Mutation Work
 - Run the language mutation tool one file at a time in sequence.
 - Always use differential mutation against the manifest unless explicitly directed otherwise.
 - Time is of the essence during mutation work; keep mutation runs as efficient as reasonably possible while preserving meaningful coverage and manifest correctness.
 - Include property tests in the standard verification suite as a separate explicit command when the project has them.
-- When the language mutation tool supports worker limits, use `--max-workers 8`.
+- When the language mutation tool supports worker limits, use `--max-workers 4`. Four, not eight: the whole swarm shares one machine and Gradle forks test JVMs of its own on top of whatever you ask for.
 - Run verification tools in verbose or progress-reporting mode when supported so long runs show normal progress.
 - Keep mutation and hardening tests separate from unit and acceptance tests.
 
@@ -24,6 +24,8 @@ You are the hardender.
 - Ignore the specifier's end-to-end QA suite; do not implement, run, or maintain QA-suite checks.
 
 ## Gherkin Mutation
+- You mutate the Tier 1 acceptance suite only: the fast JVM suite the coder builds from the same `.feature` files, run by `aps-kotlin acceptance`. It is the one acceptance tier that is mutable, and it is yours.
+- Never point Gherkin mutation at QA's Tier 2 device suite. Every mutant would need an emulator or simulator boot, one `--level soft` run would take hours, and a device-flake would report as a killed mutant, which is a false pass.
 - If Gherkin mutation exposes a no-op step, consider removing that step from the Gherkin rather than adding example columns only to assert the no-op.
 
 ## Handoff

@@ -1,5 +1,19 @@
 # Local Engineering Rules
 
-## Verification
+## Verification Before Handoff
 - Every agent except the specifier must run unit tests and acceptance tests before handoff and fix any failures.
+- "Run unit tests" is ambiguous in a Multiplatform build, because every target has its own test task. Discover this project's gate once with `./gradlew tasks --group verification` and use the aggregate task it exposes. Do not assume a task name.
+- Report which targets actually ran. A green `testDebugUnitTest` is evidence about Android only, and this project also ships iOS.
+- In a Multiplatform build the source set a test lives in is a decision, not a detail. Default to `commonTest` so the test runs on every target, and reach for `androidUnitTest` or `iosTest` only when the test exercises genuinely platform-specific code.
 - The architect, hardender, and QA must run property tests before handoff when the project has them and fix any failures.
+
+## Tool Order
+- `crap4kotlin` reads the Kover XML report and does not run tests itself, so `kover` has to run first or it has nothing to score. "Run the CRAP tool first" means first among the analysis tools, not before coverage.
+- Mutation runs last in any sequence. It is the slowest tool by a wide margin, and mutating code the cheaper tools are about to change wastes the run.
+
+## Acceptance Tiers
+- This project has two acceptance tiers, and they are not interchangeable.
+- Tier 1 is the suite `aps-kotlin` generates from the Gherkin and runs as plain JVM host tests. The coder builds it, the hardender mutates it, and it is the tier `gherkin-mutator` measures. It is the tier that carries the specification.
+- Tier 2 is the end-to-end suite that drives the assembled app on a device: Espresso or Compose UI tests on an Android emulator, XCUITest on an iOS simulator. QA owns it, and it comes from the specifier's end-to-end QA suite specification, not from the Gherkin.
+- Tier 2 is never mutated. At minutes per scenario a mutation run over it cannot finish, and a device flake would score as a killed mutant, reporting a pass that nothing earned.
+- Neither tier substitutes for the other, and neither substitutes for unit tests. If a tier is missing, say so in the handoff rather than widening another tier to cover for it.
