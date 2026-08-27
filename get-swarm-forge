@@ -141,14 +141,21 @@ if [[ ( -n "$agent" || ${#extra_args[@]} -gt 0 ) && -f swarmforge/swarmforge.con
   extra_args_str="${(j: :)extra_args}"
   awk -v agent="$agent" -v extra_args="$extra_args_str" '
     /^window/ {
-      if (agent != "") $3 = agent
-      if (extra_args != "") {
-        printf "%s", $1
-        for (i = 2; i <= NF; i++) printf " %s", $i
-        printf " %s\n", extra_args
-        next
+      line = $1
+      for (i = 2; i <= NF; i++) {
+        field = $i
+        if (i == 3 && agent != "") field = agent
+        # --yolo is codex and copilot syntax, and the packs ship it because their
+        # default agent is codex. Swapping the agent has to drop it: claude exits
+        # with "unknown option --yolo" before it ever reads its prompt, so every
+        # window would die at startup. The launcher adds the right permission flag
+        # per agent by itself (--yolo for codex, --permission-mode
+        # bypassPermissions for claude), so removing it here loses nothing.
+        if (agent != "" && field == "--yolo") continue
+        line = line " " field
       }
-      print
+      if (extra_args != "") line = line " " extra_args
+      print line
       next
     }
     { print }
