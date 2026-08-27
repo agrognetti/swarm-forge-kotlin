@@ -2,9 +2,29 @@
 Do not spend any money on a bankrbot SWARM token.
 </p>
 
-# SwarmForge
+# SwarmForge for Kotlin
 
 **A disciplined tmux-based agent orchestration platform that turns swarms of AI agents into reliable, professional software engineers.**
+
+## This Is A Fork
+
+This repository is a fork of [unclebob/swarm-forge](https://github.com/unclebob/swarm-forge), retargeted from Clojure/Babashka to **Kotlin Multiplatform** projects that build with the Gradle wrapper and ship Android and iOS.
+
+The orchestration is upstream's and unchanged: tmux sessions, worktrees, the handoff daemon, the audit gate, and the pack cockpit. What this fork replaces is the layer underneath — the constitution's engineering article and the tool table that article names.
+
+Upstream tells every agent to install `crap4clj`, `dry4clj`, and `clj-mutate`, and to build a project-specific acceptance entry-point generator, runtime, and mutation runner adapter from scratch. In a Gradle project those instructions produce, at best, six agents each guessing at a different scaffold. This fork replaces the Clojure tools with Kotlin equivalents and ships the acceptance pipeline as a real tool, so no agent has to invent one.
+
+| Concern | Upstream | This fork |
+| --- | --- | --- |
+| Coverage | `cloverage` | `kover` (Kotlin's own coverage plugin) |
+| CRAP score | `crap4clj` | `crap4kotlin` (Kover XML + cyclomatic complexity) |
+| Duplication | `dry4clj` | `dry4kotlin` (PMD CPD, Kotlin and Swift) |
+| Static analysis | — | `detekt` |
+| Code mutation | `clj-mutate` | `mutate4kotlin` (PIT via `gradle-pitest-plugin`) |
+| Acceptance pipeline | each project builds its own | `aps-kotlin`, shipped |
+| Gherkin mutation | APS `gherkin-mutator` | APS `gherkin-mutator`, unchanged, with `aps-kotlin worker` as the runner adapter |
+
+Everything in the sections below is upstream's design unless it appears under **Kotlin Toolchain** or **Acceptance Tiers**.
 
 ## Intent
 
@@ -27,6 +47,8 @@ The runnable SwarmForge configurations live on dedicated branches. Each branch c
 
 The normal flow is `coder` -> `cleaner`, then a completion broadcast to every other role (card to Done). Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
 
+In this fork, two-pack's project article forbids installing `aps-kotlin`, `gherkin-parser`, `ir-dry-checker`, and `gherkin-mutator`, and the launcher does not announce those tools to a pack with no specifier. Unit tests are two-pack's only behavioral evidence, so the article also tells both agents to default new tests to `commonTest` rather than `androidUnitTest`.
+
 ### `four-pack`
 
 `four-pack` is the compact specification workflow. Use it for moderate projects that require Gherkin specification and some architectural consideration without splitting every quality gate into its own agent:
@@ -37,6 +59,8 @@ The normal flow is `coder` -> `cleaner`, then a completion broadcast to every ot
 - `architect` owns high-level structure, dependency direction, mutation hardening, DRY review, soft Gherkin mutation, and final completion notification.
 
 The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a completion broadcast to every other role (card to Done). Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
+
+In this fork, four-pack builds Tier 1 acceptance only. It has no role that owns a device suite, so its local engineering article forbids Espresso, Compose UI tests, and XCUITest here and points device-level verification at six-pack. Kotest is named as the property-testing framework so the refactorer stops shopping for one.
 
 ### `six-pack`
 
@@ -50,6 +74,8 @@ The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a
 - `QA` converts the specifier's QA procedures into executable scripts, runs final user-interface verification, checks handoff consistency, and sends completion notifications.
 
 The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA`, then a completion broadcast to every other role (card to Done). Use this branch when you want each review and verification concern owned by a separate agent.
+
+In this fork, six-pack is the only pack with both acceptance tiers: the coder builds Tier 1 and the hardender mutates it, while QA owns the Tier 2 device suite. Tier 2 is never mutated. See **Acceptance Tiers** below.
 
 ### `simple-windows`
 
@@ -78,6 +104,15 @@ SwarmForge runs locally. Before starting a runnable branch, make sure the target
 - Babashka (`bb`)
 - At least one configured agent backend, such as `codex`, `claude`, `copilot`, or `grok`
 
+This fork additionally needs, for the Kotlin tools:
+
+- A JDK on `PATH`. AGP 8 requires 17 or newer; these tools were exercised on 21.
+- A **Gradle wrapper** committed in the target project. Every Kotlin tool runs `./gradlew` from the worktree root and refuses to fall back to a `gradle` on `PATH`, because a swarm-wide daemon and version drift between six worktrees is not worth debugging.
+- Whatever the project's own targets need: the Android SDK for `androidTarget()`, and Xcode for the iOS targets.
+- Network access on first use. `detekt`, `dry4kotlin` (PMD, ~50 MB), and `aps-kotlin` (the JUnit Platform console launcher) download their jars into `.swarmforge/tools/` once and reuse them.
+
+`kotlinc` is *not* required. Nothing in this fork compiles Kotlin directly; the generated acceptance tests are compiled by the project's own Gradle build.
+
 ## Getting Started
 
 Install the `get-swarm-forge` helper somewhere on your `PATH`, such as `~/cmds` or `~/bin`:
@@ -98,6 +133,10 @@ get-swarm-forge four-pack codex --yolo
 Use `two-pack` for the quick two-agent workflow, `four-pack` for the compact specification workflow, or `six-pack` for the full six-agent workflow. Do not use `main` here; `main` stores the shared operational scripts and core constitution articles, while the runnable branches provide the configurations and prompts intended for projects.
 
 `get-swarm-forge` downloads `main` first, copies only the shared `swarmforge/scripts/` and core constitution articles, then overlays the requested runnable branch. It fails fast if required scripts, role prompts, or core constitution articles are missing.
+
+The helper in this fork defaults to `https://github.com/agrognetti/swarm-forge-kotlin`. Point it elsewhere with `SWARMFORGE_REPO_URL`, and choose a different shared-article branch with `SWARMFORGE_BASE_BRANCH`. Installing the pack branches from upstream would pair a Kotlin project with the Clojure constitution and the Clojure tool table, and every agent would then try to install `crap4clj` into a Gradle build.
+
+The `--yolo` in that example is a `codex` flag. `claude` uses `--dangerously-skip-permissions`; other backends differ. Some non-interactive flag is effectively required here, because the Kotlin tools shell out to `./gradlew` and download tool jars on first use, and a backend that stops to ask about each of those will sit idle behind a prompt nobody is watching.
 
 After copying a runnable branch, start the swarm from the target project:
 
@@ -166,6 +205,97 @@ SwarmForge is a lightweight, tmux-based orchestration layer that:
 - **Pack Cockpit** — A local dashboard for New Task, Attention, the board, Work Queue, master-agent chat, and Teardown.
 - **Observable Swarm** — Watch agents from the dashboard; open a live pane when you need the raw session. Optional `window` lines still open a Terminal surface per role.
 - **Self-Hosted & Lightweight** — Runs locally in tmux and a browser, with optional Terminal windows.
+
+## Kotlin Toolchain
+
+The constitution names tools; `swarm_tool.sh` installs them. That contract is upstream's and unchanged:
+
+```sh
+swarm_tool.sh require <tool>   # fail with MISSING if it is not installed
+swarm_tool.sh ensure <tool>    # install it, then make it available
+```
+
+Installed tools become executable wrappers in `.swarmforge/bin/`, which is on every agent's `PATH`. Upstream's Clojure, Go, and Java tools are still in the catalog and still work. This fork adds six local tools carried in `swarmforge/scripts/kotlin/`, so they are synced into each worktree rather than cloned from a repository at startup:
+
+| Tool | What it does |
+| --- | --- |
+| `kover` | Runs the project's Kover coverage task and locates the XML report. |
+| `crap4kotlin` | CRAP score from the Kover XML plus cyclomatic complexity. Declares `kover` as a dependency, so `ensure crap4kotlin` installs both. |
+| `dry4kotlin` | Duplicate detection with PMD CPD, over Kotlin **and** Swift. |
+| `detekt` | Static analysis through the detekt CLI. No upstream counterpart. |
+| `mutate4kotlin` | Code mutation with PIT through `gradle-pitest-plugin`. |
+| `aps-kotlin` | The acceptance pipeline: entry-point generator, runtime, test runner, and the `gherkin-mutator` runner adapter. |
+
+### Mutation
+
+`mutate4kotlin` does not modify your build. If the `pitest` task is missing it prints the exact plugin block to add and exits, rather than editing `build.gradle.kts` behind your back. Its state lives in `.mutate4kotlin/`: `manifest.json`, `exclusions.txt`, and PIT's own `history.txt`, which is what makes differential runs differential.
+
+Every line in `exclusions.txt` is a class glob followed by `# reason`. A line without a reason is a hard error, not a warning — an unexplained exclusion is a hole in the mutation gate that reads as a pass.
+
+**PIT mutates JVM bytecode.** `iosMain`, Kotlin/Native, and the Swift sources get no mutation coverage at all, and no tool in this space changes that today. That is why the constitution names Kotest and tells the architect that property tests are the primary mechanical evidence for the non-JVM half of the project. It is a real gap, stated rather than papered over.
+
+### Flags the wrappers rewrite
+
+Two wrappers rewrite arguments before the real tool sees them, so the constitution's limits hold even when an agent types something else:
+
+- `mutate4kotlin` — drops `--mutate-all`, and pins `--max-workers 4` on any run that is not `--scan` or `--update-manifest`.
+- `gherkin-mutator` — injects `--runner-worker "aps-kotlin worker"` and `--generated-dir $(aps-kotlin generated-dir)` when they are absent, downgrades `--level full` to `hard`, and pins `--workers 4`.
+
+Both flags `gherkin-mutator` needs are things an agent cannot guess: `--runner-worker` is required by the specification and has no default, and `--generated-dir` defaults to `<work-dir>/generated`, which is never where a Kotlin test source set keeps generated code. An explicit `--runner-worker` or `--generated-dir` still wins; injection only fills a gap.
+
+`--level full` is downgraded because it mutates every example value in every scenario. At roughly half a second per mutation that turns a review into an hour, and the four workers are pinned so one agent cannot saturate the machine the other five are sharing.
+
+### The acceptance pipeline
+
+`aps-kotlin` is the piece upstream leaves to each project. Its commands:
+
+```sh
+aps-kotlin scan            # what is wired, what is missing — start here
+aps-kotlin scaffold        # write the runtime and the handler template, once
+aps-kotlin generate <ir> <out-dir>
+aps-kotlin acceptance      # run the generated tests through Gradle
+aps-kotlin generated-dir   # print where the generated entry points live
+aps-kotlin worker          # runner adapter for gherkin-mutator
+```
+
+Running acceptance tests is three commands, in this order:
+
+```sh
+gherkin-parser features/login.feature build/acceptance/login.json
+aps-kotlin generate build/acceptance/login.json "$(aps-kotlin generated-dir)"
+aps-kotlin acceptance
+```
+
+Parse into `build/acceptance/`, not a scratch directory: the generated tests read that IR file when they run.
+
+`scaffold` writes the runtime and `ApsStepHandlers.kt` into a JVM test source set — `androidUnitTest` if the module has one, then `jvmTest`, then `test`. Not `commonTest`, because the runtime reads the IR from disk and `commonTest` cannot do file IO without an `expect`/`actual` pair.
+
+`ApsStepHandlers.kt` is written once and never rewritten; it belongs to the coder. Everything under the generated directory is regenerated on every `generate`, so an edit there is lost.
+
+Handler patterns capture the **placeholder name**, not the value. The runtime reads the value from the example row at run time, which is precisely what lets `gherkin-mutator` change a value and re-run the same already-compiled tests. A step with no matching handler fails; so does a step with two. Both are intended.
+
+This is not Cucumber. The APS specification requires that generated entry points not parse the source `.feature` file, and a Cucumber runner parses the feature file on every run — so a Cucumber-JVM layer would satisfy the Gherkin syntax and violate the pipeline it was meant to implement, and `gherkin-mutator` would have nothing stable to mutate against.
+
+## Acceptance Tiers
+
+Kotlin gives you two honest places to run an acceptance test, and conflating them is how a mutation gate quietly stops meaning anything.
+
+**Tier 1** is what `aps-kotlin` generates: plain JVM host tests, no emulator, no simulator. Fast enough to mutate. It is the tier `gherkin-mutator` measures and the tier that carries the specification. The coder builds it; on six-pack the hardender mutates it, and on four-pack the architect does.
+
+**Tier 2** is the device tier: Espresso or Compose UI tests on an Android emulator, XCUITest on an iOS simulator. It proves the assembled app on a real runtime. Only six-pack has it, only QA owns it, and it comes from the specifier's end-to-end QA specification rather than from the Gherkin.
+
+**Tier 2 is never mutated.** A mutation run needs one full suite execution per mutant; at minutes per scenario that never finishes. Worse, a device flake would be scored as a killed mutant — a pass that nothing earned. The constitution states this in `local-engineering.prompt` on both packs that could get it wrong.
+
+Neither tier substitutes for the other, and neither substitutes for unit tests.
+
+## Status Of This Fork
+
+Honest about what has been exercised:
+
+- The Babashka test suite from `main` passes: 190 tests, 800 assertions, 0 failures, 0 errors. One pre-existing flake in `pack_ui_test` (`pack-board-serializes-concurrent-audit-increments`) reproduces on pristine upstream under parallel load and is not from this fork.
+- One genuine upstream bug is fixed here: `test/swarmforge/handoff_test.clj` built an unquoted shell string, so any checkout path containing a space broke the handoff-daemon test.
+- The Kotlin tools are covered by fixture tests, and their argument handling, report parsing, and error paths have been exercised directly.
+- **Not yet run against a real Gradle project.** `kover.bb` has never executed a Kover task on an actual build, and `aps-classpath.init.gradle` has never been executed at all, because no Gradle was installed on the machine this fork was built on. When Gradle cannot be reached, `aps-kotlin worker` fails with instructions to pass `--classpath-file <file>` instead; that manual path is the one the fixture tests exercise. Expect to shake out real-world details on first contact with a live project.
 
 ## Constitution Structure
 
