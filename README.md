@@ -219,8 +219,8 @@ Installed tools become executable wrappers in `.swarmforge/bin/`, which is on ev
 
 | Tool | What it does |
 | --- | --- |
-| `kover` | Runs the project's Kover coverage task and locates the XML report. |
-| `crap4kotlin` | CRAP score from the Kover XML plus cyclomatic complexity. Declares `kover` as a dependency, so `ensure crap4kotlin` installs both. |
+| `kover` | Runs the project's Kover coverage task and locates the XML report. Reports the author's code apart from generated code, and files that declare `@Composable` apart from the rest. |
+| `crap4kotlin` | CRAP score from the Kover XML plus cyclomatic complexity. Excludes generated classes and compiler-generated members, and says how many of each it hid. Declares `kover` as a dependency, so `ensure crap4kotlin` installs both. |
 | `dry4kotlin` | Duplicate detection with PMD CPD, over Kotlin **and** Swift. |
 | `detekt` | Static analysis through the detekt CLI. No upstream counterpart. |
 | `mutate4kotlin` | Code mutation with PIT through `gradle-pitest-plugin`. |
@@ -292,10 +292,12 @@ Neither tier substitutes for the other, and neither substitutes for unit tests.
 
 Honest about what has been exercised:
 
-- The Babashka test suite from `main` passes: 190 tests, 800 assertions, 0 failures, 0 errors. One pre-existing flake in `pack_ui_test` (`pack-board-serializes-concurrent-audit-increments`) reproduces on pristine upstream under parallel load and is not from this fork.
+- The Babashka test suite passes: 209 tests, 842 assertions, 0 failures, 0 errors. One pre-existing flake in `pack_ui_test` (`pack-board-serializes-concurrent-audit-increments`) reproduces on pristine upstream under parallel load and is not from this fork.
 - One genuine upstream bug is fixed here: `test/swarmforge/handoff_test.clj` built an unquoted shell string, so any checkout path containing a space broke the handoff-daemon test.
-- The Kotlin tools are covered by fixture tests, and their argument handling, report parsing, and error paths have been exercised directly.
-- **Not yet run against a real Gradle project.** `kover.bb` has never executed a Kover task on an actual build, and `aps-classpath.init.gradle` has never been executed at all, because no Gradle was installed on the machine this fork was built on. When Gradle cannot be reached, `aps-kotlin worker` fails with instructions to pass `--classpath-file <file>` instead; that manual path is the one the fixture tests exercise. Expect to shake out real-world details on first contact with a live project.
+- `test/swarmforge/kotlin_support_test.clj` covers the layer the Kotlin tools share: path globbing, and telling generated code from the author's. `kover` and `crap4kotlin` are exercised end to end as subprocesses against fixture reports. The other four tools have no tests of their own.
+- `kover`, `crap4kotlin`, `dry4kotlin`, `detekt` and `mutate4kotlin` have been run against a real Kotlin Multiplatform project — Gradle 9.1.0, Kotlin 2.4.10, AGP 9.0.1, JVM 21, Compose Multiplatform — and two defects found that way are fixed: report globs that never matched a single-module project, and coverage that counted generated code.
+- **`aps-kotlin` has never been run against a real Gradle project**, and `aps-classpath.init.gradle` has never been executed at all. When Gradle cannot be reached, `aps-kotlin worker` fails with instructions to pass `--classpath-file <file>` instead; that manual path is the one the fixture tests exercise. Expect to shake out real-world details on first contact with a live project.
+- **`mutate4kotlin`'s setup advice does not work on Kotlin Multiplatform.** `gradle-pitest-plugin` registers nothing unless the `java` plugin is applied, and a KMP module rejects `java`. Mutations can be run there by driving the PIT command line directly, which the tool does not yet tell you how to do.
 
 ## Constitution Structure
 

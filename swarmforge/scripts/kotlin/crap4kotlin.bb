@@ -33,6 +33,24 @@
       (str/includes? name "$annotations")
       (str/ends-with? name "$kotlin_stdlib")))
 
+(def reasons
+  "Why a row can leave the risk list. The class-level vocabulary is shared with
+  kover so both tools give the same answer to the same question; the member-level
+  one is only meaningful here, because kover counts whole classes."
+  (assoc s/generated-reasons :generated-member "compiler-generated member"))
+
+(defn generated-row
+  "Why this method is not the author's work to fix, or nil when it is.
+
+  Two granularities, and the class one is the reason this tool used to rank
+  generated code: filtering member names catches `equals` inside a class a
+  person wrote, but says nothing about a class no person wrote at all. A Compose
+  Resources accessor is an ordinary-looking getter in an ordinary-looking class."
+  [sources row]
+  (if (generated-member? (:method row))
+    :generated-member
+    (s/generated-class sources row)))
+
 (defn children [element tag]
   (->> (:content element)
        (filter #(and (map? %) (= tag (:tag %))))))
@@ -64,25 +82,26 @@
 (defn crap [cc coverage]
   (+ (* cc cc (Math/pow (- 1.0 coverage) 3)) cc))
 
-(defn methods-of [xml-path]
+(defn methods-of [xml-path sources]
   (let [root (xml/parse-str (slurp xml-path))]
     (for [pkg (children root :package)
           cls (children pkg :class)
           mth (children cls :method)
-          :let [mname (get-in mth [:attrs :name])
-                cinfo (complexity-of mth)]
+          :let [cinfo (complexity-of mth)]
           :when cinfo]
-      (let [cov (coverage-of mth)]
-        {:package (get-in pkg [:attrs :name])
-         :class (get-in cls [:attrs :name])
-         :source (get-in cls [:attrs :sourcefilename])
-         :method mname
-         :line (get-in mth [:attrs :line])
-         :generated? (generated-member? mname)
-         :cc (:cc cinfo)
-         :derived? (:derived? cinfo)
-         :coverage cov
-         :crap (crap (:cc cinfo) cov)}))))
+      (let [cov (coverage-of mth)
+            row {:package (get-in pkg [:attrs :name])
+                 :class (get-in cls [:attrs :name])
+                 :source (get-in cls [:attrs :sourcefilename])
+                 :method (get-in mth [:attrs :name])
+                 :line (get-in mth [:attrs :line])}]
+        (assoc row
+               :generated (generated-row sources row)
+               :composable? (s/declares-composable? sources (:package row) (:source row))
+               :cc (:cc cinfo)
+               :derived? (:derived? cinfo)
+               :coverage cov
+               :crap (crap (:cc cinfo) cov))))))
 
 (defn find-reports []
   (->> (fs/glob (s/worktree-root) (str s/any-depth "build/reports/kover/*.xml"))
@@ -98,11 +117,16 @@
   (println (format "%9s %5s %9s  %s" "CRAP" "CC" "COVERAGE" "METHOD"))
   (println (s/rule))
   (doseq [r rows]
-    (println (format "%9.2f %5d %8.1f%%  %s.%s%s%s"
+    (println (format "%9.2f %5d %8.1f%%  %s.%s%s%s%s"
                      (:crap r) (:cc r) (* 100.0 (:coverage r))
                      (short-class r) (:method r)
                      (if (:line r) (str " (" (:source r) ":" (:line r) ")") "")
-                     (if (:derived? r) " [cc derived]" "")))))
+                     (if (:derived? r) " [cc derived]" "")
+                     ;; The file, not the function: this is a text match on the
+                     ;; source. It is here because a zero on such a row usually
+                     ;; means the coverage tool cannot reach it, and the fix is a
+                     ;; UI test rather than the unit test the number implies.
+                     (if (:composable? r) " [composable file]" "")))))
 
 (defn -main [& args]
   (let [{:keys [flags]} (s/parse-args args #{"--top" "--threshold" "--max-workers" "--workers"})
@@ -119,9 +143,10 @@
               "  kover"
               ""
               "Then run crap4kotlin again."))
-    (let [all (vec (mapcat methods-of reports))
-          filtered (if include-generated? all (remove :generated? all))
-          hidden (- (count all) (count filtered))
+    (let [sources (s/hand-written-sources)
+          all (vec (mapcat #(methods-of % sources) reports))
+          filtered (if include-generated? all (remove :generated all))
+          hidden (frequencies (keep :generated all))
           ranked (->> filtered
                       (filter #(>= (:crap %) threshold))
                       (sort-by (juxt (comp - :crap) :class :method))
@@ -132,18 +157,29 @@
                 "Run the module's tests, then kover, then crap4kotlin."))
       (s/heading "CRAP risk list (crap4kotlin)")
       (println "CRAP = CC^2 * (1 - coverage)^3 + CC")
-      (println (format "Methods scored: %d   compiler-generated hidden: %d   reports: %d"
-                       (count filtered) hidden (count reports)))
+      (println (format "Methods scored: %d   generated hidden: %d   reports: %d"
+                       (count filtered) (reduce + 0 (vals hidden)) (count reports)))
+      (doseq [[reason n] (sort-by (comp - val) hidden)]
+        (println (format "  %4d  %s" n (reasons reason reason))))
       (println)
-      (print-rows (take top ranked))
-      (when (> (count ranked) top)
-        (println)
-        (println (format "... %d more at or above the threshold. Use --top %d to see them all."
-                         (- (count ranked) top) (count ranked))))
-      (println)
-      (let [worst (first ranked)]
-        (println (format "Highest CRAP: %.2f at %s.%s"
-                         (:crap worst) (short-class worst) (:method worst))))
+      (if (empty? ranked)
+        ;; Reachable without a broken build: a module can be all generated code,
+        ;; or --threshold can be set above every row. This used to print an empty
+        ;; table followed by `Highest CRAP: nu at ?.null`, and exit 0.
+        (println (if include-generated?
+                   "No method scores at or above the threshold."
+                   (str "No hand-written method scores at or above the threshold. "
+                        "Pass --include-generated to see what was hidden.")))
+        (do
+          (print-rows (take top ranked))
+          (when (> (count ranked) top)
+            (println)
+            (println (format "... %d more at or above the threshold. Use --top %d to see them all."
+                             (- (count ranked) top) (count ranked))))
+          (println)
+          (let [worst (first ranked)]
+            (println (format "Highest CRAP: %.2f at %s.%s"
+                             (:crap worst) (short-class worst) (:method worst))))))
       (println "Scope: commonMain via Android host tests, plus androidMain.")
       (println "Not scored: iosMain, Kotlin/Native, Swift. Kover cannot reach them."))))
 

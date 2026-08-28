@@ -226,6 +226,66 @@
        sort
        vec))
 
+;; --------------------------------------------------------- generated vs. author
+
+(defn hand-written-sources
+  "Every Kotlin and Java file a person typed, keyed by the suffix a coverage
+  report can reconstruct. A JaCoCo class element carries its package and its
+  source file name but never its directory, so `com/example/App.kt` is the most
+  specific key available. Matching on the bare file name instead would let one
+  module's hand-written Res.kt vouch for another module's generated one."
+  []
+  (into #{} (concat (files-with-extension "kt") (files-with-extension "java"))))
+
+(defn- source-path
+  "The hand-written file sitting at <package>/<source> under a src tree, or nil."
+  [sources package source]
+  (when source
+    (let [suffix (str "/" (if (str/blank? (str package)) "" (str package "/")) source)]
+      (some #(when (str/ends-with? % suffix) %) sources))))
+
+(def ^:private compose-lambda-holder "ComposableSingletons$")
+
+(defn generated-class
+  "Why a coverage row is not the author's code, or nil when it is.
+
+  Two questions, because one criterion cannot answer both:
+
+  `:outside-source-tree` - the class names a source file that exists nowhere
+  under any `src` directory. Compose Resources, KSP, kapt and BuildConfig all
+  land in `build`, so this catches every generator without naming any of them.
+
+  `:compose-lambda-holder` - the Compose compiler hoists the lambdas out of a
+  composable into a synthetic `ComposableSingletons$<File>Kt` class. That class
+  reports the author's own file as its source, so the first criterion cannot see
+  it, and its line count is large enough to dominate a small module.
+
+  A tool that scores these is scoring the toolchain, not the work."
+  [sources {:keys [package class source]}]
+  (cond
+    (str/includes? (str class) compose-lambda-holder) :compose-lambda-holder
+    (nil? (source-path sources package source)) :outside-source-tree
+    :else nil))
+
+(def generated-reasons
+  {:compose-lambda-holder "Compose compiler lambda holder"
+   :outside-source-tree "no source file under any src directory"})
+
+(def ^:private composable-file?
+  ;; Memoised: a report names one class per nested type, and they all resolve
+  ;; back to the same handful of files.
+  (memoize (fn [path] (str/includes? (slurp path) "@Composable"))))
+
+(defn declares-composable?
+  "True when the file's text contains the @Composable annotation.
+
+  This is a text match on the source, not a parse, so it is reported as what it
+  is: the file declares composables. It answers a question no coverage report
+  can, because a UI function is only worth covering through a UI test and the
+  XML has no way to say which functions those are."
+  [sources package source]
+  (boolean (some-> (source-path sources package source) composable-file?)))
+
 ;; ----------------------------------------------------------------------- xml
 
 (defn children
