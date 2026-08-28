@@ -85,7 +85,7 @@
          :crap (crap (:cc cinfo) cov)}))))
 
 (defn find-reports []
-  (->> (fs/glob (s/worktree-root) "**/build/reports/kover/*.xml")
+  (->> (fs/glob (s/worktree-root) (str s/any-depth "build/reports/kover/*.xml"))
        (map str)
        sort
        vec))

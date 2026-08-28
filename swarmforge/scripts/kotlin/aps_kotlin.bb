@@ -166,16 +166,12 @@
 
 ;; ------------------------------------------------------- feature file lookup
 
-(def ^:private ignored-path-parts
-  #{"build" ".gradle" ".git" ".idea" ".worktrees" ".swarmforge" "node_modules"
-    "DerivedData" "Pods"})
-
 (defn feature-files []
   (let [root (s/worktree-root)]
+    ;; `**.feature` carries no leading slash, so unlike `**/segment` it does
+    ;; match at the worktree root. The exclusion list is the shared one.
     (->> (fs/glob root "**.feature")
-         (remove (fn [path]
-                   (some ignored-path-parts
-                         (map str (iterator-seq (.iterator (fs/relativize root path)))))))
+         (remove #(s/under-ignored-dir? root %))
          (map str)
          sort
          vec)))
@@ -363,19 +359,23 @@
   [given]
   (if (string? given)
     (str (fs/absolutize given))
+    ;; `*/src/...` would anchor the search to exactly one level down, which
+    ;; misses a single-module project whose source sets sit at the worktree root
+    ;; and misses a module nested under a grouping directory.
     (let [root (s/worktree-root)
           existing (for [set-name test-source-set-preference
-                         dir (fs/glob root (str "*/src/" set-name "/kotlin"))]
+                         dir (s/glob-sources root (str "src/" set-name "/kotlin"))]
                      {:rank (.indexOf test-source-set-preference set-name) :dir (str dir)})]
       (if (seq existing)
         (:dir (first (sort-by (juxt :rank :dir) existing)))
-        (let [modules (->> (fs/glob root "*/src/commonMain/kotlin")
+        (let [modules (->> (s/glob-sources root "src/commonMain/kotlin")
                            (map #(str (fs/parent (fs/parent (fs/parent %)))))
                            sort)]
           (if (seq modules)
             (str (fs/path (first modules) "src" "androidUnitTest" "kotlin"))
             (s/die! "Cannot find a JVM test source set in this worktree."
-                    (str "Looked for */src/{" (str/join "," test-source-set-preference) "}/kotlin")
+                    (str "Looked for src/{" (str/join "," test-source-set-preference)
+                         "}/kotlin at any depth")
                     ""
                     "Name the directory explicitly:"
                     "  aps-kotlin scaffold --dir <module>/src/androidUnitTest/kotlin")))))))

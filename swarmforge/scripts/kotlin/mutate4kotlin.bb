@@ -153,8 +153,10 @@
 ;; ---------------------------------------------------------------- pit reports
 
 (defn find-reports []
-  (->> (fs/glob (s/worktree-root) "**/build/reports/pitest/**/mutations.xml")
-       (concat (fs/glob (s/worktree-root) "**/build/reports/pitest/mutations.xml"))
+  ;; Both depths are variable: the module may be the root project, and PIT nests
+  ;; the report under a timestamp directory unless timestampedReports is off.
+  (->> (fs/glob (s/worktree-root)
+                (str s/any-depth "build/reports/pitest/" s/any-depth "mutations.xml"))
        (map str)
        distinct
        (sort-by #(- (fs/file-time->millis (fs/last-modified-time %))))
@@ -300,8 +302,8 @@
     (let [reports (find-reports)]
       (when (empty? reports)
         (s/die! "PIT ran but produced no mutations.xml."
-                (str "Looked for **/build/reports/pitest/**/mutations.xml under "
-                     (s/worktree-root))
+                (str "Looked for build/reports/pitest/mutations.xml, timestamp"
+                     " directory or not, at any depth under " (s/worktree-root))
                 ""
                 "Add \"XML\" to outputFormats in the pitest block. The HTML report"
                 "alone is not machine readable."))

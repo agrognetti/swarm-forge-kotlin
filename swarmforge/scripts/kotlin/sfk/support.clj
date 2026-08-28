@@ -166,24 +166,58 @@
       (try (max 1 (Integer/parseInt raw)) (catch Exception _ 4))
       4)))
 
-;; ------------------------------------------------------------- source sets
+;; ------------------------------------------------------------------- globbing
+
+(def any-depth
+  "Glob prefix for a path that may sit at any depth, the worktree root included.
+
+  `**/` on its own requires at least one directory segment, so a pattern like
+  `**/build/reports/kover/*.xml` finds nothing at all in a single-module project
+  that keeps `build` beside `settings.gradle.kts`. The tool then reports 'no
+  report found' for a build that produced one. Writing `**build` drops the
+  requirement but also matches `notbuild`, so it trades a silent miss for a
+  silent false positive. The empty brace alternative is the only form that is
+  both complete and exact.
+
+  Use it for interior segments too: a trailing `**/mutations.xml` has the same
+  blind spot as a leading one."
+  "{,**/}")
 
 (def ^:private ignored-dirs
   #{"build" ".gradle" ".git" ".idea" ".worktrees" ".swarmforge" "tmp"
     "node_modules" "DerivedData" "Pods"})
 
+(defn under-ignored-dir?
+  "True when any segment of path is generated, vendored or scratch output.
+  Report globs deliberately reach into `build`, so this filter is opt-in rather
+  than baked into the glob helpers."
+  [root path]
+  (boolean (some ignored-dirs
+                 (map str (iterator-seq (.iterator (fs/relativize root path)))))))
+
+(defn glob-sources
+  "Every hand-written path matching pattern, at any depth under root.
+
+  pattern carries no depth prefix of its own: pass `src` or
+  `src/commonMain/kotlin`. Matches inside build output are dropped, which
+  matters here precisely because `any-depth` reaches places a `*/`-anchored
+  pattern never could."
+  ([root pattern] (glob-sources root pattern nil))
+  ([root pattern opts]
+   (->> (fs/glob root (str any-depth pattern) opts)
+        (remove #(under-ignored-dir? root %))
+        (map str)
+        sort
+        vec)))
+
+;; ------------------------------------------------------------- source sets
+
 (defn source-dirs
   "Every `src` directory that Gradle modules expose, excluding build output.
-  KMP projects keep source sets under <module>/src/<sourceSet>/kotlin."
+  KMP projects keep source sets under <module>/src/<sourceSet>/kotlin, and a
+  single-module project keeps them at the worktree root."
   []
-  (let [root (worktree-root)]
-    (->> (fs/glob root "**/src" {:hidden false})
-         (remove (fn [p]
-                   (some ignored-dirs
-                         (map str (iterator-seq (.iterator (fs/relativize root p)))))))
-         (map str)
-         sort
-         vec)))
+  (glob-sources (worktree-root) "src" {:hidden false}))
 
 (defn files-with-extension [ext]
   (->> (source-dirs)

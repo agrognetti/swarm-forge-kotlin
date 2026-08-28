@@ -121,7 +121,7 @@
         dirs (s/source-dirs)]
     (when (empty? dirs)
       (s/die! (str "No source directories found under " (s/worktree-root))
-              "dry4kotlin looks for **/src directories in the worktree."
+              "dry4kotlin looks for src directories at any depth in the worktree."
               "Run it from the worktree assigned to your role."))
     (let [pmd (pmd-binary)
           summaries

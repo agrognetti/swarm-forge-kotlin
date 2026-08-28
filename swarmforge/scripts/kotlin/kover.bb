@@ -26,7 +26,7 @@
       (s/require-task! "koverXmlReport" "org.jetbrains.kotlinx.kover" setup-snippet)))
 
 (defn find-reports []
-  (->> (fs/glob (s/worktree-root) "**/build/reports/kover/*.xml")
+  (->> (fs/glob (s/worktree-root) (str s/any-depth "build/reports/kover/*.xml"))
        (map str)
        (sort-by #(- (fs/file-time->millis (fs/last-modified-time %))))
        vec))
@@ -70,7 +70,8 @@
     (let [reports (find-reports)]
       (when (empty? reports)
         (s/die! "Kover produced no XML report."
-                (str "Looked for **/build/reports/kover/*.xml under " (s/worktree-root))
+                (str "Looked for build/reports/kover/*.xml at any depth under "
+                     (s/worktree-root))
                 ""
                 "Ensure the Kover plugin is applied to the module under test and that"
                 "the XML report task is not disabled in the build script."))

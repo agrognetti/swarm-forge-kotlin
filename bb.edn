@@ -6,9 +6,11 @@
                 (require 'swarmforge.handoff-test)
                 (require 'swarmforge.script-test)
                 (require 'swarmforge.pack-ui-test)
+                (require 'swarmforge.kotlin-support-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
-                                                                    'swarmforge.pack-ui-test)]
+                                                                    'swarmforge.pack-ui-test
+                                                                    'swarmforge.kotlin-support-test)]
                   (when (pos? (+ fail error))
                     (System/exit (+ fail error))))
                 (let [dir "test/dashboard"
