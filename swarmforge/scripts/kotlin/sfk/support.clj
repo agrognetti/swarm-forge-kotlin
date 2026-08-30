@@ -281,8 +281,10 @@
 
   This is a text match on the source, not a parse, so it is reported as what it
   is: the file declares composables. It answers a question no coverage report
-  can, because a UI function is only worth covering through a UI test and the
-  XML has no way to say which functions those are."
+  can, because the kind of test that covers a composable differs from the kind
+  that covers plain logic, and the XML cannot say which rows are which. Which
+  test, not whether: a composable renders on the JVM under Robolectric, so these
+  rows are expected to reach the same coverage as the rest."
   [sources package source]
   (boolean (some-> (source-path sources package source) composable-file?)))
 

@@ -60,7 +60,7 @@ In this fork, two-pack's project article forbids installing `aps-kotlin`, `gherk
 
 The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a completion broadcast to every other role (card to Done). Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
 
-In this fork, four-pack builds Tier 1 acceptance only. It has no role that owns a device suite, so its local engineering article forbids Espresso, Compose UI tests, and XCUITest here and points device-level verification at six-pack. Kotest is named as the property-testing framework so the refactorer stops shopping for one.
+In this fork, four-pack builds Tier 1 acceptance only. It has no role that owns a device suite, so its local engineering article forbids Espresso, on-device Compose UI tests, and XCUITest here and points device-level verification at six-pack. Robolectric compose tests are not affected: they run on the JVM in the host test source set, so they stay in Tier 1 everywhere. Kotest is named as the property-testing framework so the refactorer stops shopping for one.
 
 ### `six-pack`
 
@@ -219,7 +219,7 @@ Installed tools become executable wrappers in `.swarmforge/bin/`, which is on ev
 
 | Tool | What it does |
 | --- | --- |
-| `kover` | Runs the project's Kover coverage task and locates the XML report. Reports the author's code apart from generated code, and files that declare `@Composable` apart from the rest. |
+| `kover` | Runs the project's Kover coverage task and locates the XML report. Reports the author's code apart from generated code, and files that declare `@Composable` apart from the rest — a reading aid, not an exemption, since a Robolectric compose test covers them in the same task. |
 | `crap4kotlin` | CRAP score from the Kover XML plus cyclomatic complexity. Excludes generated classes and compiler-generated members, and says how many of each it hid. Declares `kover` as a dependency, so `ensure crap4kotlin` installs both. |
 | `dry4kotlin` | Duplicate detection with PMD CPD, over Kotlin **and** Swift. |
 | `detekt` | Static analysis through the detekt CLI. No upstream counterpart. |
@@ -284,6 +284,8 @@ Kotlin gives you two honest places to run an acceptance test, and conflating the
 
 **Tier 2** is the device tier: Espresso or Compose UI tests on an Android emulator, XCUITest on an iOS simulator. It proves the assembled app on a real runtime. Only six-pack has it, only QA owns it, and it comes from the specifier's end-to-end QA specification rather than from the Gherkin.
 
+What decides the tier is the runtime, not the word "UI". A Compose test driven by Robolectric renders on the JVM in seconds, in the same host test source set and the same Gradle task, so it is Tier 1: `kover` measures it and `mutate4kotlin` mutates it. Composables are covered, not excused.
+
 **Tier 2 is never mutated.** A mutation run needs one full suite execution per mutant; at minutes per scenario that never finishes. Worse, a device flake would be scored as a killed mutant — a pass that nothing earned. The constitution states this in `local-engineering.prompt` on both packs that could get it wrong.
 
 Neither tier substitutes for the other, and neither substitutes for unit tests.
@@ -292,10 +294,11 @@ Neither tier substitutes for the other, and neither substitutes for unit tests.
 
 Honest about what has been exercised:
 
-- The Babashka test suite passes: 209 tests, 842 assertions, 0 failures, 0 errors. One pre-existing flake in `pack_ui_test` (`pack-board-serializes-concurrent-audit-increments`) reproduces on pristine upstream under parallel load and is not from this fork.
+- The Babashka test suite passes: 210 tests, 847 assertions, 0 failures, 0 errors. One pre-existing flake in `pack_ui_test` (`pack-board-serializes-concurrent-audit-increments`) reproduces on pristine upstream under parallel load and is not from this fork.
 - One genuine upstream bug is fixed here: `test/swarmforge/handoff_test.clj` built an unquoted shell string, so any checkout path containing a space broke the handoff-daemon test.
 - `test/swarmforge/kotlin_support_test.clj` covers the layer the Kotlin tools share: path globbing, and telling generated code from the author's. `kover` and `crap4kotlin` are exercised end to end as subprocesses against fixture reports. The other four tools have no tests of their own.
 - `kover`, `crap4kotlin`, `dry4kotlin`, `detekt` and `mutate4kotlin` have been run against a real Kotlin Multiplatform project — Gradle 9.1.0, Kotlin 2.4.10, AGP 9.0.1, JVM 21, Compose Multiplatform — and two defects found that way are fixed: report globs that never matched a single-module project, and coverage that counted generated code.
+- Composable coverage is measured, not assumed. A Robolectric compose test in `androidHostTest` took the `@Composable` file in that project from 0% to 100% line coverage, and the lambda-holder class the Compose compiler synthesises from 0 of 19 lines to 19 of 19, with no emulator and inside the ordinary `testAndroidHostTest` task. The constitution said covering a composable needed a UI test this toolchain does not run; that was wrong, and it now says how to cover one instead.
 - **`aps-kotlin` has never been run against a real Gradle project**, and `aps-classpath.init.gradle` has never been executed at all. When Gradle cannot be reached, `aps-kotlin worker` fails with instructions to pass `--classpath-file <file>` instead; that manual path is the one the fixture tests exercise. Expect to shake out real-world details on first contact with a live project.
 - **`mutate4kotlin`'s setup advice does not work on Kotlin Multiplatform.** `gradle-pitest-plugin` registers nothing unless the `java` plugin is applied, and a KMP module rejects `java`. Mutations can be run there by driving the PIT command line directly, which the tool does not yet tell you how to do.
 

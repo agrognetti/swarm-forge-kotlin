@@ -86,8 +86,9 @@
   differ by several times over.
 
   Within the author's own code, a file that declares @Composable is separated
-  out. UI is covered by UI tests, which this toolchain does not run, so folding
-  it in with the logic hides whichever of the two is worse."
+  out, because the two halves are usually covered at different times and folding
+  them together hides whichever is worse. The split is not an exemption: a
+  composable renders on the JVM under Robolectric, in this very test task."
   [xml-path sources]
   (let [rows (vec (classes-of xml-path sources))
         authored (remove :generated rows)
@@ -159,9 +160,10 @@
         (println "compiler synthesises. Generated code is code nobody wrote, and a")
         (println "percentage that includes it measures the toolchain, not the work.")
         (println)
-        (println "Files that declare @Composable are reported apart because covering")
-        (println "them needs a UI test, which no tool in this constitution runs. A low")
-        (println "number there is a scope statement, not a licence to leave it untested.")
+        (println "Files that declare @Composable are reported apart so a low number")
+        (println "there cannot hide behind the logic. It is not an exemption: a")
+        (println "composable renders on the JVM under Robolectric, in this same host")
+        (println "test task, so this figure is expected to reach the other one.")
         (println)
         (println "Scope: commonMain via Android host tests, plus androidMain.")
         (println "Not covered: iosMain, Kotlin/Native, Swift. Kover cannot reach them.")

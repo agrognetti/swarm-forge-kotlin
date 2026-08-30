@@ -302,6 +302,41 @@
         (testing "and no Compose breakdown either"
           (is (not (str/includes? out "@Composable   line"))))))))
 
+(def ^:private composable-report
+  "A composable file that is fully covered beside plain logic that is half
+  covered. Measured on a real module: a Robolectric compose test in the Android
+  host test source set took the @Composable file from 0 of 3 lines to 3 of 3."
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       "<report name=\"shared\">\n"
+       "  <package name=\"com/example\">\n"
+       "    <class name=\"com/example/AppKt\" sourcefilename=\"App.kt\">\n"
+       "      <counter type=\"LINE\" missed=\"0\" covered=\"3\"/>\n"
+       "    </class>\n"
+       "    <class name=\"com/example/Greeting\" sourcefilename=\"Greeting.kt\">\n"
+       "      <counter type=\"LINE\" missed=\"1\" covered=\"1\"/>\n"
+       "    </class>\n"
+       "  </package>\n"
+       "</report>\n"))
+
+(deftest kover-counts-a-covered-composable-as-covered
+  ;; The split exists so neither half hides behind the other, not to excuse the
+  ;; UI half. A composable renders on the JVM under Robolectric, so its tier is
+  ;; an ordinary coverage figure and must move when tests are written for it.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/Greeting.kt"]
+    (fn [root]
+      (init-repo! root)
+      (write! (fs/path root "shared/src/commonMain/kotlin/com/example/App.kt")
+              "@Composable\nfun App() {}\n")
+      (write! (fs/path root "shared/build/reports/kover/report.xml") composable-report)
+      (let [{:keys [exit out]} (run-tool root "kover.bb" "--report-only")]
+        (is (zero? exit))
+        (is (str/includes? out "your code                line  80.00%"))
+        (is (str/includes? out "plain Kotlin           line  50.00%"))
+        (is (str/includes? out "declares @Composable   line 100.00%"))
+        (testing "and the output does not tell the reader it cannot be covered"
+          (is (not (str/includes? out "no tool in this constitution runs"))))))))
+
 (deftest crap4kotlin-ranks-the-authors-methods-and-says-what-it-hid
   ;; Before this fix the risk list was 20 rows on this project, 14 of them
   ;; Compose Resources accessors. An agent told to attack the top of the list

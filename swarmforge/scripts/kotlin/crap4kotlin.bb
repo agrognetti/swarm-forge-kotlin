@@ -123,9 +123,9 @@
                      (if (:line r) (str " (" (:source r) ":" (:line r) ")") "")
                      (if (:derived? r) " [cc derived]" "")
                      ;; The file, not the function: this is a text match on the
-                     ;; source. It is here because a zero on such a row usually
-                     ;; means the coverage tool cannot reach it, and the fix is a
-                     ;; UI test rather than the unit test the number implies.
+                     ;; source. It is here because it tells you what kind of test
+                     ;; kills the row - a Robolectric compose test rather than a
+                     ;; plain unit test. It is not a reason to skip the row.
                      (if (:composable? r) " [composable file]" "")))))
 
 (defn -main [& args]
