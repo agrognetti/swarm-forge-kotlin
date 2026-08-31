@@ -748,6 +748,65 @@
           (is (str/includes? out "AppKt.App (App.kt:3)"))
           (is (str/includes? out "negated conditional")))))))
 
+;; ----------------------------------------------------- aps-kotlin source sets
+
+(deftest aps-kotlin-finds-the-host-test-source-set-this-toolchain-has
+  ;; The bug this pins down: the preference list held androidUnitTest, jvmTest and
+  ;; test, and a module under com.android.kotlin.multiplatform.library has none of
+  ;; them - its host tests live in androidHostTest. scan then reported a path that
+  ;; did not exist, and scaffold created it. Gradle compiles nothing there, so the
+  ;; acceptance suite would never have run and nothing would have said so.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/Greeting.kt"
+              "shared/src/androidHostTest/kotlin/com/example/GreetingTest.kt"]
+    (fn [root]
+      (init-repo! root)
+      (let [{:keys [exit out]} (run-tool root "aps_kotlin.bb" "scan")]
+        (is (zero? exit))
+        (testing "the source set it names is the one on disk"
+          (is (str/includes? out "shared/src/androidHostTest/kotlin"))
+          (is (not (str/includes? out "androidUnitTest"))))
+        (testing "and the mutator is pointed at tests that will be compiled"
+          (is (str/includes? out "androidHostTest/kotlin/acceptance/generated")))))))
+
+(deftest aps-kotlin-keeps-preferring-android-unit-test-where-that-is-the-name
+  ;; The older name is not the older toolchain: AGP publishes no multiplatform
+  ;; variant of the application plugin, so a current module that produces the APK
+  ;; still uses androidUnitTest. Adding androidHostTest must not shadow it.
+  (with-tree ["settings.gradle.kts"
+              "app/src/commonMain/kotlin/com/example/Greeting.kt"
+              "app/src/androidUnitTest/kotlin/com/example/GreetingTest.kt"]
+    (fn [root]
+      (init-repo! root)
+      (let [{:keys [exit out]} (run-tool root "aps_kotlin.bb" "scan")]
+        (is (zero? exit))
+        (is (str/includes? out "app/src/androidUnitTest/kotlin"))))))
+
+(deftest aps-kotlin-refuses-to-invent-a-source-set-gradle-would-ignore
+  ;; The fallback used to answer this case by returning <module>/src/androidUnitTest
+  ;; whatever the module's plugin was. A wrong guess here is invisible - the
+  ;; scaffold succeeds and the suite silently never runs - so there is no guess.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/Greeting.kt"]
+    (fn [root]
+      (init-repo! root)
+      (testing "scaffold refuses, and names both spellings with their plugins"
+        (let [{:keys [exit err]} (run-tool root "aps_kotlin.bb" "scaffold")]
+          (is (not (zero? exit)))
+          (is (str/includes? err "No JVM test source set exists"))
+          (is (str/includes? err "shared/src/androidHostTest/kotlin"))
+          (is (str/includes? err "com.android.kotlin.multiplatform.library"))
+          (is (str/includes? err "shared/src/androidUnitTest/kotlin"))
+          (is (str/includes? err "com.android.application"))))
+      (testing "but scan still reports it, because scan is where a role starts"
+        (let [{:keys [exit out]} (run-tool root "aps_kotlin.bb" "scan")]
+          (is (zero? exit))
+          (is (str/includes? out "NOT FOUND"))
+          (is (str/includes? out "androidHostTest"))))
+      (testing "and nothing was written into a directory Gradle ignores"
+        (is (not (fs/exists? (fs/path root "shared/src/androidUnitTest"))))
+        (is (not (fs/exists? (fs/path root "shared/src/androidHostTest"))))))))
+
 (deftest a-task-whose-class-gradle-will-not-print-is-a-tool-defect
   ;; The third state. Accepting would restore the defect; blaming the project
   ;; would send an agent to change a build script that is fine.

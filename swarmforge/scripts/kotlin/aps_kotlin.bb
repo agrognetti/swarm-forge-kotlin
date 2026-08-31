@@ -342,35 +342,66 @@
 (def scaffold-files ["ApsJson.kt" "ApsRuntime.kt" "ApsStepHandlers.kt"])
 
 (def ^:private test-source-set-preference
-  ["androidUnitTest" "jvmTest" "test"])
+  "The JVM test source sets, best first. Two spell the Android host tests because
+  the name depends on which Android plugin the module applies, and no module has
+  both: `androidHostTest` under `com.android.kotlin.multiplatform.library`, and
+  `androidUnitTest` under `com.android.library` or `com.android.application`. AGP
+  publishes no Kotlin Multiplatform variant of the application plugin, so the
+  older name is not the older toolchain - a current build that produces the APK
+  still uses it."
+  ["androidHostTest" "androidUnitTest" "jvmTest" "test"])
+
+(defn test-source-root
+  "The best JVM test source set that exists in this worktree, or nil.
+
+  A query, so that `scan` can report the absence instead of exiting on it. The
+  Android host tests come first because that is the source set an Android and iOS
+  KMP module has, and the runtime reads files from disk, which `commonTest` cannot
+  do without an expect/actual pair."
+  ([] (test-source-root nil))
+  ([given]
+   (if (string? given)
+     (str (fs/absolutize given))
+     ;; `*/src/...` would anchor the search to exactly one level down, which
+     ;; misses a single-module project whose source sets sit at the worktree root
+     ;; and misses a module nested under a grouping directory.
+     (let [root (s/worktree-root)
+           existing (for [set-name test-source-set-preference
+                          dir (s/glob-sources root (str "src/" set-name "/kotlin"))]
+                      {:rank (.indexOf test-source-set-preference set-name) :dir (str dir)})]
+       (:dir (first (sort-by (juxt :rank :dir) existing)))))))
 
 (defn find-test-source-root
-  "Where the runtime belongs: a JVM test source set. androidUnitTest first,
-  because that is the one an Android + iOS KMP module actually has, and the
-  runtime reads files, which commonTest cannot do without expect/actual."
+  "Where the runtime belongs, or a refusal naming the two candidates.
+
+  The source set must already exist. There is deliberately no fallback that
+  invents one: which of the two Android spellings Gradle compiles is decided by a
+  plugin this tool would have to ask Gradle about, and choosing wrong fails
+  silently. Gradle compiles nothing in the directory, so the scaffold succeeds,
+  the generated entrypoints land beside it, the acceptance suite never runs, and
+  `gherkin-mutator` is handed a --generated-dir of files nobody compiles - a
+  pipeline that is green because it measured nothing. Refusing costs one message."
   [given]
-  (if (string? given)
-    (str (fs/absolutize given))
-    ;; `*/src/...` would anchor the search to exactly one level down, which
-    ;; misses a single-module project whose source sets sit at the worktree root
-    ;; and misses a module nested under a grouping directory.
-    (let [root (s/worktree-root)
-          existing (for [set-name test-source-set-preference
-                         dir (s/glob-sources root (str "src/" set-name "/kotlin"))]
-                     {:rank (.indexOf test-source-set-preference set-name) :dir (str dir)})]
-      (if (seq existing)
-        (:dir (first (sort-by (juxt :rank :dir) existing)))
-        (let [modules (->> (s/glob-sources root "src/commonMain/kotlin")
-                           (map #(str (fs/parent (fs/parent (fs/parent %)))))
-                           sort)]
-          (if (seq modules)
-            (str (fs/path (first modules) "src" "androidUnitTest" "kotlin"))
-            (s/die! "Cannot find a JVM test source set in this worktree."
-                    (str "Looked for src/{" (str/join "," test-source-set-preference)
-                         "}/kotlin at any depth")
-                    ""
-                    "Name the directory explicitly:"
-                    "  aps-kotlin scaffold --dir <module>/src/androidUnitTest/kotlin")))))))
+  (or (test-source-root given)
+      (let [root (s/worktree-root)
+            module (->> (s/glob-sources root "src/commonMain/kotlin")
+                        (map #(str (fs/relativize root (fs/parent (fs/parent (fs/parent %))))))
+                        sort
+                        first)
+            suggest (fn [set-name plugins]
+                      (format "  aps-kotlin scaffold --dir %s/src/%s/kotlin   # %s"
+                              (or module "<module>") set-name plugins))]
+        (s/die! "No JVM test source set exists in this worktree."
+                (str "Looked for src/{" (str/join "," test-source-set-preference)
+                     "}/kotlin at any depth")
+                ""
+                "Which of the two Android names Gradle compiles depends on the"
+                "module's Android plugin, and a directory carrying the wrong one is"
+                "ignored silently rather than reported. Read the module's build"
+                "script, create that source set, or name it here:"
+                ""
+                (suggest "androidHostTest" "com.android.kotlin.multiplatform.library")
+                (suggest "androidUnitTest" "com.android.library, com.android.application")))))
 
 (defn do-scaffold [flags]
   (let [package (or (when (string? (get flags "--package")) (get flags "--package")) default-package)
@@ -460,7 +491,12 @@
        vec))
 
 (def ^:private task-preference
-  ["testDebugUnitTest" "test" "jvmTest" "testReleaseUnitTest"])
+  "Tie-break only, and only when no compiled output holds the generated class.
+  `testAndroidHostTest` is the host test task the multiplatform Android library
+  plugin registers, and it belongs here for the same reason `androidHostTest`
+  belongs in the source-set list: without it the task this project actually runs
+  ranks below tasks it does not have."
+  ["testAndroidHostTest" "testDebugUnitTest" "test" "jvmTest" "testReleaseUnitTest"])
 
 (defn choose-classpath
   "Prefer the test task whose compiled output actually contains the generated
@@ -715,12 +751,22 @@
 
 (defn do-scan [flags]
   (let [package (or (when (string? (get flags "--package")) (get flags "--package")) default-package)
-        source-root (try (find-test-source-root (get flags "--dir")) (catch Exception _ nil))
+        ;; The query, not the refusal: scan reports what is missing and exits 0,
+        ;; so an absent source set is a line of output rather than the end of it.
+        source-root (test-source-root (get flags "--dir"))
         target-dir (when source-root (fs/path source-root (str/replace package "." "/")))
         generated-dir (when target-dir (fs/path target-dir "generated"))
         features (feature-files)]
     (s/heading "Acceptance setup (aps-kotlin scan)")
     (println (format "Test source set : %s" (if source-root (relative source-root) "NOT FOUND")))
+    ;; Named here rather than left to scaffold, because scan is where a role is
+    ;; told to start and the two spellings are the one thing it cannot work out
+    ;; on its own. androidHostTest under the multiplatform Android library plugin,
+    ;; androidUnitTest under com.android.library or com.android.application.
+    (when-not source-root
+      (println (format "  looked for src/{%s}/kotlin at any depth"
+                       (str/join "," test-source-set-preference)))
+      (println "  create the one the module's Android plugin compiles, or pass --dir"))
     (when target-dir
       (doseq [name-of scaffold-files]
         (println (format "  %-20s %s" name-of
