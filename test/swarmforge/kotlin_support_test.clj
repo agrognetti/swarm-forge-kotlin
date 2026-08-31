@@ -121,19 +121,36 @@
                 ["git" "config" "user.name" "Test User"]]]
     (apply sh/sh (concat args [:dir (str root)]))))
 
-(defn- source-dirs-in
-  "source-dirs resolves the worktree through git in the process working
-  directory, so it can only be exercised by running bb inside the fixture."
-  [root]
+(defn- eval-in
+  "Evaluate an sfk.support expression with bb's working directory inside root.
+
+  These functions resolve the worktree through git in the process working
+  directory, so they can only be exercised by running bb inside the fixture."
+  [root expr]
   (let [{:keys [exit out err]}
         (sh/sh "bb" "--classpath" kotlin-scripts-dir
-               "-e" "(require '[sfk.support :as s]) (prn (s/source-dirs))"
+               "-e" (str "(require '[sfk.support :as s]) (prn " expr ")")
                :dir (str root)
                :env (merge (into {} (System/getenv))
                            {"GIT_CONFIG_NOSYSTEM" "1"}))]
     (when-not (zero? exit)
       (throw (ex-info (str "bb failed: " err) {:exit exit})))
     (read-string out)))
+
+(defn- source-dirs-in [root] (eval-in root "(s/source-dirs)"))
+
+(defn- found-in
+  "Relative paths of the files one of the two search helpers returns."
+  [root helper ext]
+  (->> (eval-in root (format "(s/%s \"%s\")" helper ext))
+       (map #(str (fs/relativize (fs/real-path root) (fs/real-path %))))
+       set))
+
+(defn- run-tool
+  "Run a Kotlin tool inside a fixture. Tools resolve the worktree through git in
+  the process working directory, so they can only be exercised as a subprocess."
+  [root tool & args]
+  (apply sh/sh "bb" (str (fs/path kotlin-scripts-dir tool)) (concat args [:dir (str root)])))
 
 (deftest source-dirs-finds-a-root-level-src-in-a-single-module-project
   ;; The layout that broke detekt and dry4kotlin silently: no subproject, so
@@ -154,6 +171,129 @@
       (let [dirs (map #(str (fs/relativize (fs/real-path root) (fs/real-path %)))
                       (source-dirs-in root))]
         (is (= ["shared/src"] dirs))))))
+
+;; --------------------------------------------------------- Swift lives outside src
+
+(deftest swift-is-found-where-xcode-puts-it-not-only-under-src
+  ;; The defect: dry4kotlin asked for `.swift` files inside `src` directories,
+  ;; and Xcode puts none there. On every KMP project it analysed zero Swift files
+  ;; and printed "0 Swift" directly above "this is the only constitution tool
+  ;; here that reaches iosMain and Swift" - a claim of coverage, not a warning.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/App.kt"
+              "iosApp/iosApp/ContentView.swift"
+              "iosApp/iosApp/iOSApp.swift"
+              "ios-shared/Sources/Widget/Widget.swift"]
+    (fn [root]
+      (init-repo! root)
+      (testing "the src-anchored search is why the bug was silent"
+        (is (empty? (found-in root "files-with-extension" "swift"))))
+      (testing "the worktree search finds the Xcode and SPM layouts both"
+        (is (= #{"iosApp/iosApp/ContentView.swift"
+                 "iosApp/iosApp/iOSApp.swift"
+                 "ios-shared/Sources/Widget/Widget.swift"}
+               (found-in root "worktree-files-with-extension" "swift"))))
+      (testing "Kotlin keeps its anchor, which the generated-code filters need"
+        (is (= #{"shared/src/commonMain/kotlin/App.kt"}
+               (found-in root "files-with-extension" "kt")))))))
+
+(deftest swift-nobody-typed-is-left-out
+  ;; A vendored dependency holds more Swift than the project does, and every
+  ;; copy of it is duplicated by construction. Reporting that buries the finding
+  ;; the tool exists to surface.
+  (with-tree ["settings.gradle.kts"
+              "iosApp/iosApp/ContentView.swift"
+              "Pods/Alamofire/Source/Alamofire.swift"
+              "Carthage/Checkouts/promises/Promise.swift"
+              "shared/build/generated/Gen.swift"
+              "iosApp/DerivedData/Index/Stale.swift"
+              ".build/checkouts/pkg/Sources/Pkg.swift"
+              ".swiftpm/xcode/Junk.swift"]
+    (fn [root]
+      (init-repo! root)
+      (is (= #{"iosApp/iosApp/ContentView.swift"}
+             (found-in root "worktree-files-with-extension" "swift"))))))
+
+(def ^:private fake-pmd
+  "A stand-in for the PMD distribution, so dry4kotlin's own behaviour can be
+  tested without a 50MB download on every run.
+
+  It records the file list it was handed and answers with one canned duplication
+  naming the first file in that list. That makes the assertions below about what
+  dry4kotlin *did*, not about what PMD would have found: which files reached the
+  detector, whether the list was written in the one-path-per-line form PMD reads,
+  and whether the report was parsed and printed."
+  (str "#!/bin/sh\n"
+       "report=''; list=''; lang=''\n"
+       "while [ $# -gt 0 ]; do\n"
+       "  case \"$1\" in\n"
+       "    --report-file) report=\"$2\"; shift 2;;\n"
+       "    --file-list) list=\"$2\"; shift 2;;\n"
+       "    --language) lang=\"$2\"; shift 2;;\n"
+       "    *) shift;;\n"
+       "  esac\n"
+       "done\n"
+       "cp \"$list\" \"$(dirname \"$report\")/seen-$lang.txt\"\n"
+       "first=$(head -1 \"$list\")\n"
+       "{\n"
+       "  echo '<?xml version=\"1.0\"?>'\n"
+       "  echo '<pmd-cpd>'\n"
+       "  echo '  <duplication lines=\"13\" tokens=\"42\">'\n"
+       "  echo \"    <file line=\\\"5\\\" path=\\\"$first\\\"/>\"\n"
+       "  echo \"    <file line=\\\"9\\\" path=\\\"$first\\\"/>\"\n"
+       "  echo '  </duplication>'\n"
+       "  echo '</pmd-cpd>'\n"
+       "} > \"$report\"\n"))
+
+(defn- install-fake-pmd! [root]
+  (let [exe (fs/path root ".swarmforge" "tools" "pmd-bin-7.26.0" "bin" "pmd")]
+    (write! exe fake-pmd)
+    (fs/set-posix-file-permissions exe "rwxr-xr-x")))
+
+(deftest dry4kotlin-hands-the-detector-the-swift-xcode-put-outside-src
+  ;; The end of the defect, at the level that broke: not "can the helper find
+  ;; Swift" but "does the tool ask the helper that finds it". Wiring the anchored
+  ;; search back in would leave the helper tests green and this one red.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/App.kt"
+              "iosApp/iosApp/ContentView.swift"
+              "iosApp/iosApp/iOSApp.swift"]
+    (fn [root]
+      (init-repo! root)
+      (install-fake-pmd! root)
+      (let [{:keys [exit out]} (run-tool root "dry4kotlin.bb")
+            seen (fn [lang] (slurp (str (fs/path root ".swarmforge" "kotlin" "dry"
+                                                (str "seen-" lang ".txt")))))]
+        (is (zero? exit))
+        (testing "both languages ran, so the Swift pass was not skipped"
+          (is (str/includes? out "Duplication: swift"))
+          (is (str/includes? out "Files analysed: 1 Kotlin, 2 Swift")))
+        (testing "the detector was given one path per line, which is what it reads"
+          (is (= ["iosApp/iosApp/ContentView.swift" "iosApp/iosApp/iOSApp.swift"]
+                 (->> (str/split-lines (seen "swift"))
+                      (remove str/blank?)
+                      (map #(str (fs/relativize (fs/real-path root) (fs/real-path %))))))))
+        (testing "Kotlin is still handed only what is under src"
+          (is (= 1 (count (remove str/blank? (str/split-lines (seen "kotlin")))))))
+        (testing "the report came back parsed rather than counted as zero"
+          (is (str/includes? out "1 duplicate block(s), 13 duplicated lines total."))
+          (is (str/includes? out "iosApp/iosApp/ContentView.swift:5")))))))
+
+(deftest dry4kotlin-refuses-before-it-downloads-and-names-both-searches
+  ;; The refusal has to name where it looked for each language, because "no Swift
+  ;; found" and "looked in the wrong place for Swift" are the same sentence
+  ;; otherwise. It also has to come before PMD: the guard used to sit after the
+  ;; download, so an empty worktree fetched 50MB to report having nothing to do.
+  (with-tree ["settings.gradle.kts" "README.md"]
+    (fn [root]
+      (init-repo! root)
+      (let [{:keys [exit err]} (run-tool root "dry4kotlin.bb")]
+        (is (not (zero? exit)))
+        (is (str/includes? err "No .kt or .swift files found"))
+        (is (str/includes? err "src directories at any depth"))
+        (is (str/includes? err "anywhere except build, Pods, Carthage and DerivedData"))
+        (testing "PMD was never fetched"
+          (is (not (fs/exists? (fs/path root ".swarmforge" "tools")))))))))
 
 ;; ------------------------------------------------- generated code vs. the author
 
@@ -261,12 +401,6 @@
        "  </package>\n"
        "  <counter type=\"LINE\" missed=\"8\" covered=\"2\"/>\n"
        "</report>\n"))
-
-(defn- run-tool
-  "Run a Kotlin tool inside a fixture. Tools resolve the worktree through git in
-  the process working directory, so they can only be exercised as a subprocess."
-  [root tool & args]
-  (apply sh/sh "bb" (str (fs/path kotlin-scripts-dir tool)) (concat args [:dir (str root)])))
 
 (deftest kover-reports-the-authors-coverage-not-the-generators
   (with-tree ["settings.gradle.kts"

@@ -5,6 +5,12 @@
 ;; tokenizers. This is the only constitution tool in this fork that reaches
 ;; every source set, including iosMain and Swift.
 ;;
+;; The two languages are found two different ways, and that is not tidiness left
+;; undone. Gradle decides where Kotlin lives, so Kotlin is searched under `src`.
+;; Nothing decides where Swift lives: Xcode keeps a KMP project's Swift in
+;; `iosApp/iosApp/` and an SPM package keeps it in `Sources/`, so Swift is
+;; searched across the worktree with vendored output excluded by name.
+;;
 ;; CPD is a token-level detector, so it sees through reformatting, comments and
 ;; whitespace. It does NOT see through renaming: PMD's --ignore-identifiers is
 ;; implemented for Java but not for the Kotlin or Swift lexers, verified against
@@ -48,8 +54,17 @@
 ;; releases, which have moved those flags around.
 (def ran-ok #{0 4 5})
 
-(defn run-cpd [pmd language dirs min-tokens]
+(defn run-cpd [pmd language files min-tokens]
   (let [out-file (fs/path (s/state-dir "dry") (str "cpd-" language ".xml"))
+        ;; --file-list, not --dir. A directory makes CPD walk the tree a second
+        ;; time under its own rules, which are not this tool's: it descends into
+        ;; a `build` directory nested inside a source set and has no reason to
+        ;; skip `Pods`. The count printed below would then describe a different
+        ;; set of files than the one PMD read. Naming the files makes "Files
+        ;; analysed" the analysis rather than a parallel estimate of it, and it
+        ;; sidesteps --dir splitting its own value on commas.
+        list-file (fs/path (s/state-dir "dry") (str "files-" language ".txt"))
+        _ (spit (str list-file) (str (str/join "\n" files) "\n"))
         ;; --report-file, not stream scraping: CPD renders its report to stderr
         ;; when no report file is given, so a tool that reads stdout finds
         ;; nothing and reports zero duplication. Verified against PMD 7.26.0.
@@ -58,15 +73,15 @@
         ;; passed: they are no-ops for the Kotlin and Swift lexers, and a flag
         ;; that silently does nothing would make this report describe an
         ;; analysis that did not happen.
-        cmd (concat [pmd "cpd"
-                     "--language" language
-                     "--minimum-tokens" (str min-tokens)
-                     "--format" "xml"
-                     "--report-file" (str out-file)]
-                    (mapcat (fn [d] ["--dir" d]) dirs))
+        cmd [pmd "cpd"
+             "--language" language
+             "--minimum-tokens" (str min-tokens)
+             "--format" "xml"
+             "--report-file" (str out-file)
+             "--file-list" (str list-file)]
         out (java.io.StringWriter.)
         err (java.io.StringWriter.)
-        {:keys [exit]} (p/sh (vec cmd) {:dir (s/worktree-root) :out out :err err})]
+        {:keys [exit]} (p/sh cmd {:dir (s/worktree-root) :out out :err err})]
     (when-not (contains? ran-ok exit)
       (s/die! (str "PMD CPD failed for language " language " (exit " exit ").")
               (str "Command: " (str/join " " cmd))
@@ -117,31 +132,45 @@
         min-tokens (try (Integer/parseInt (str (get flags "--min-tokens" "50")))
                         (catch Exception _ 50))
         kotlin-files (s/files-with-extension "kt")
-        swift-files (s/files-with-extension "swift")
-        dirs (s/source-dirs)]
-    (when (empty? dirs)
-      (s/die! (str "No source directories found under " (s/worktree-root))
-              "dry4kotlin looks for src directories at any depth in the worktree."
+        ;; Not the src-anchored search Kotlin gets. Gradle lays Kotlin out, and
+        ;; nothing lays Swift out: Xcode puts a KMP project's Swift in
+        ;; `iosApp/iosApp/`, which no `src` directory contains. Anchoring it
+        ;; found zero files on every KMP project and said so as "0 Swift" on a
+        ;; line above "this is the only tool here that reaches Swift".
+        swift-files (s/worktree-files-with-extension "swift")]
+    ;; One guard, on the thing that matters, and before the download. A missing
+    ;; `src` directory used to be its own error, which was the wrong question
+    ;; twice over: it says nothing about Swift, and it fired after fetching 50MB
+    ;; of PMD to analyse a worktree with nothing in it. Both search rules are
+    ;; named, because "nothing found" and "looked in the wrong place" print the
+    ;; same way otherwise - which is the whole defect this tool had for Swift.
+    (when (and (empty? kotlin-files) (empty? swift-files))
+      (s/die! (str "No .kt or .swift files found under " (s/worktree-root))
+              "Kotlin is searched inside src directories at any depth."
+              "Swift is searched anywhere except build, Pods, Carthage and DerivedData."
               "Run it from the worktree assigned to your role."))
     (let [pmd (pmd-binary)
           summaries
           (cond-> []
             (seq kotlin-files)
-            (conj (report-language "kotlin" (run-cpd pmd "kotlin" dirs min-tokens)))
+            (conj (report-language "kotlin" (run-cpd pmd "kotlin" kotlin-files min-tokens)))
             (seq swift-files)
-            (conj (report-language "swift" (run-cpd pmd "swift" dirs min-tokens))))]
-      (when (empty? summaries)
-        (s/die! "No .kt or .swift files found in any src directory."
-                (str "Searched: " (str/join ", " (map relative dirs)))))
+            (conj (report-language "swift" (run-cpd pmd "swift" swift-files min-tokens))))]
       (s/heading "DRY summary (dry4kotlin)")
       (println (format "minimum-tokens: %d   PMD %s" min-tokens pmd-version))
       (doseq [x summaries]
         (println (format "  %-7s %3d block(s)  %4d duplicated line(s)"
                          (:language x) (:count x) (:lines x))))
       (println)
+      ;; The count PMD was given, not a second walk of the tree that happens to
+      ;; agree with it. Printed for both languages because a zero here is the
+      ;; one number that can mean either "no Swift in this project" or "this
+      ;; tool looked in the wrong place", and the next two lines say where.
       (println (format "Files analysed: %d Kotlin, %d Swift"
                        (count kotlin-files) (count swift-files)))
-      (println "Scope: every Kotlin source set and every Swift source set.")
+      (println "Kotlin scope: every src directory, so every Kotlin source set including iosMain.")
+      (println "Swift scope : anywhere in the worktree except build, Pods, Carthage and DerivedData,")
+      (println "              because Xcode keeps Swift outside src (iosApp/iosApp/, Sources/).")
       (println "This is the only constitution tool here that reaches iosMain and Swift.")
       (println)
       (println "Comparison is verbatim token matching. PMD's --ignore-identifiers")

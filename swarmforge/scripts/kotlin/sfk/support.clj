@@ -314,8 +314,13 @@
   "{,**/}")
 
 (def ^:private ignored-dirs
+  "Directory names whose contents nobody typed. `Pods`, `DerivedData` and
+  `Carthage` are the Apple-side entries: a dependency manager or Xcode wrote
+  them, and they hold enough Swift to drown a real finding. Nothing here is
+  hidden-directory duplication - `fs/glob` skips those unless asked - the dotted
+  names are listed so the set reads as one rule rather than two."
   #{"build" ".gradle" ".git" ".idea" ".worktrees" ".swarmforge" "tmp"
-    "node_modules" "DerivedData" "Pods"})
+    "node_modules" "DerivedData" "Pods" "Carthage"})
 
 (defn under-ignored-dir?
   "True when any segment of path is generated, vendored or scratch output.
@@ -349,12 +354,39 @@
   []
   (glob-sources (worktree-root) "src" {:hidden false}))
 
-(defn files-with-extension [ext]
+(defn files-with-extension
+  "Files with this extension inside a Gradle source set.
+
+  Anchored to `src` on purpose, because that is where Gradle compiles Kotlin
+  from and because the generated-code filters rely on the anchor: a class whose
+  source file is absent from every `src` directory is one nobody wrote. Use
+  `worktree-files-with-extension` for a language Gradle does not lay out."
+  [ext]
   (->> (source-dirs)
        (mapcat (fn [dir] (fs/glob dir (str "**." ext))))
        (map str)
        sort
        vec))
+
+(defn worktree-files-with-extension
+  "Files with this extension anywhere a person could have put them.
+
+  For Swift, which has no `src/<sourceSet>/` convention to anchor to. Xcode
+  keeps a KMP project's Swift under `iosApp/iosApp/`, an SPM package keeps it
+  under `Sources/`, and neither is inside a `src` directory - so the anchored
+  search above returns nothing and a tool built on it reports an analysis of
+  zero files as a clean result.
+
+  Vendored and generated output is dropped by name, and `fs/glob` already
+  declines to enter a hidden directory, which covers SPM's `.build` and
+  `.swiftpm`."
+  [ext]
+  (let [root (worktree-root)]
+    (->> (fs/glob root (str "**." ext))
+         (remove #(under-ignored-dir? root %))
+         (map str)
+         sort
+         vec)))
 
 ;; --------------------------------------------------------- generated vs. author
 
