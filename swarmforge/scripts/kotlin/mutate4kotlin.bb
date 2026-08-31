@@ -518,6 +518,153 @@
        :mutator (last (str/split (or (text-of m "mutator") "unknown") #"\."))
        :description (text-of m "description")})))
 
+;; ------------------------------------------------ code inlined from elsewhere
+
+;; The Kotlin compiler copies the body of every `inline` function into its caller,
+;; and it writes down what it copied. A class that inlined anything carries a
+;; SourceDebugExtension attribute holding a JSR-45 SMAP: a table mapping each line
+;; number of the compiled class back to the file that line was written in. That is
+;; the compiler's own record rather than a guess about a plugin, so it answers
+;; "did a person here write this line" for any library - Compose, Room,
+;; kotlin.collections - without naming one.
+;;
+;; It matters most inside the class the Compose compiler builds for a composable's
+;; lambdas. Measured on a POC: of that class's 113 mutants, 32 sat on the author's
+;; own lines - including a real surviving mutant on a hand-written `if` - and 81
+;; were inlined Column.kt, Layout.kt and Composer.kt. Excluding the class
+;; wholesale hides the first group along with the second.
+;;
+;; The compiler also renumbers what it inlines, above the last line of the file
+;; being compiled, which is what makes the table unambiguous: `Column.kt:87` is
+;; reported as line 59 of a 49-line file, so it cannot be confused with the
+;; author's line 59. Nothing here relies on that ordering, because the table names
+;; the file for every line either way.
+
+(defn- smap-text
+  "The SMAP a compiled class carries, or nil when it inlined nothing.
+
+  Lifted out of the raw bytes rather than by walking the constant pool. The table
+  is stored as one UTF-8 constant, and its `SMAP` header and `*E` terminator
+  bracket it exactly; a class-file parser would be sixty lines to arrive at the
+  same string. Decoded twice on purpose: ISO-8859-1 first, because it maps every
+  byte to one character and so leaves the offsets usable, then UTF-8 over that
+  slice so a non-ASCII file name survives."
+  [class-file]
+  (let [raw (String. (fs/read-all-bytes class-file) "ISO-8859-1")]
+    (when-let [start (str/index-of raw "SMAP\n")]
+      (when-let [end (str/index-of raw "\n*E\n" start)]
+        (String. (.getBytes (subs raw start (+ end 4)) "ISO-8859-1") "UTF-8")))))
+
+(defn- first-stratum
+  "The `*F` and `*L` lines of the SMAP's first stratum, keyed by their header.
+
+  The first only. Kotlin emits two: `Kotlin` maps a compiled line to the file the
+  instruction was written in, and `KotlinDebug` maps the same line to the call
+  site in the file being compiled. Both are honest and they disagree deliberately
+  - the instruction belongs to Column.kt, the call that pulled it in belongs to
+  the author - and the question here is who wrote the instruction. Reading
+  `KotlinDebug` would report every inlined line as the author's own, which is the
+  bug this whole section exists to remove."
+  [smap]
+  (->> (str/split-lines smap)
+       (drop-while #(not (str/starts-with? % "*S ")))
+       rest
+       (take-while #(not (or (str/starts-with? % "*S ") (= "*E" %))))
+       (reduce (fn [acc line]
+                 (if (re-matches #"\*[A-Z]" line)
+                   (assoc acc :at line)
+                   (update acc (:at acc) (fnil conj []) line)))
+               {:at nil})))
+
+(defn- smap-file-names
+  "File id -> the name a person recognises, from the `*F` section.
+
+  Two spellings, and the plus form is the one Kotlin writes: `+ <id> <name>`
+  followed by a line holding the path. The path is dropped - for a Kotlin class it
+  holds the internal class name, not a source location - so the following line is
+  skipped rather than parsed."
+  [lines]
+  (loop [[line & more] lines acc {}]
+    (cond
+      (nil? line) acc
+      (re-matches #"\+\s+\d+\s+.*" line)
+      (let [[_ id nm] (re-matches #"\+\s+(\d+)\s+(.*)" line)]
+        (recur (rest more) (assoc acc id nm)))
+      (re-matches #"\d+\s+.*" line)
+      (let [[_ id nm] (re-matches #"(\d+)\s+(.*)" line)]
+        (recur more (assoc acc id nm)))
+      :else (recur more acc))))
+
+(defn- smap-line-ranges
+  "[first-line last-line file-id] for every `*L` entry, in the order written.
+
+  The entry is `InputStartLine#FileId,RepeatCount:OutputStartLine,OutputIncrement`
+  with three of the five optional: the file id carries over from the entry before
+  when omitted, and both counts default to 1. Only the output side is kept, since
+  that is the numbering PIT reports against."
+  [lines]
+  (:ranges
+   (reduce (fn [{:keys [file ranges] :as acc} line]
+             (if-let [[_ _in id repeat-n out incr]
+                      (re-matches #"(\d+)(?:#(\d+))?(?:,(\d+))?:(\d+)(?:,(\d+))?"
+                                  (str/trim line))]
+               (let [id (or id file)
+                     span (* (parse-long (or repeat-n "1")) (parse-long (or incr "1")))
+                     start (parse-long out)]
+                 {:file id :ranges (conj ranges [start (+ start span -1) id])})
+               acc))
+           {:file nil :ranges []}
+           lines)))
+
+(defn line-origins
+  "A function from a compiled line number to the file that line was written in,
+  or nil when the class carries no SMAP and every line is therefore its own."
+  [smap]
+  (when smap
+    ;; The header's second line is the file being compiled. Used instead of
+    ;; assuming file id 1, because the ids are arbitrary in the format even though
+    ;; Kotlin happens to number that file first.
+    (let [own (second (str/split-lines smap))
+          sections (first-stratum smap)
+          names (smap-file-names (get sections "*F"))
+          ranges (smap-line-ranges (get sections "*L"))]
+      (fn [line]
+        (when-let [n (parse-long (str line))]
+          (when-let [[_ _ id] (first (filter (fn [[lo hi]] (<= lo n hi)) ranges))]
+            (let [nm (get names id)]
+              (when-not (= nm own) nm))))))))
+
+(def ^:private class-origins
+  "Memoised: a report names a handful of classes and hundreds of mutants in them,
+  and each answer costs a glob and a file read."
+  (memoize
+   (fn [fqcn]
+     (let [rel (str (str/replace (str fqcn) "." "/") ".class")]
+       (some-> (->> (fs/glob (s/worktree-root)
+                             (str s/any-depth "build/" s/any-depth (fs/file-name rel)))
+                    (map str)
+                    ;; The same class is written to several build directories.
+                    ;; Any copy answers, so the shortest path is taken to keep
+                    ;; the choice stable between runs.
+                    (filter #(str/ends-with? % (str "/" rel)))
+                    (sort-by (juxt count identity))
+                    first)
+               smap-text
+               line-origins)))))
+
+(defn inlined-from
+  "`[:inlined <file>]` when the compiler copied this mutant's line in from another
+  file, or nil when the author wrote it.
+
+  nil is also the answer when the class file cannot be found or carries no table.
+  Deliberate: the tool reports a mutant it cannot attribute, because a missing
+  test wrongly reported is work for somebody and a missing test wrongly hidden is
+  a lie the report tells."
+  [{:keys [class line]}]
+  (when-let [origin-of (class-origins class)]
+    (when-let [origin (origin-of line)]
+      [:inlined origin])))
+
 ;; ------------------------------------------------- code the compiler inserted
 
 ;; A second kind of generated code, and the class-level check cannot see it. The
@@ -563,7 +710,9 @@
   {:compose-inserted-call "call the Compose compiler inserted"})
 
 (defn- excluded-reason [reason]
-  (or (inserted-code-reasons reason) (s/generated-reasons reason) reason))
+  (if (vector? reason)
+    (str "inlined from " (second reason))
+    (or (inserted-code-reasons reason) (s/generated-reasons reason) reason)))
 
 ;; PIT counts these statuses as detected. NO_COVERAGE means the mutated line
 ;; never ran at all, which is the most actionable finding of the three.
@@ -787,11 +936,14 @@
                           m (mutations (:xml r))]
                       (assoc m
                              :report (:label r)
-                             ;; Two questions, asked in this order because the
-                             ;; cheap one settles most of it: is the whole class
-                             ;; generated, and failing that, did a compiler plugin
-                             ;; put this instruction inside a class that is ours.
-                             :generated (or (s/generated-class sources m)
+                             ;; Three questions, cheapest first, and none of them
+                             ;; is the class-level Compose rule the coverage tools
+                             ;; use: is the whole class generated, was this line
+                             ;; inlined from another file, and failing both, did a
+                             ;; compiler plugin put this instruction inside a
+                             ;; method of the author's own.
+                             :generated (or (s/outside-source-tree sources m)
+                                            (inlined-from m)
                                             (compiler-plumbing m)))))
         ;; Generated code is left out of the headline for the same reason coverage
         ;; leaves it out: nobody wrote it, so a surviving mutant in it is not a

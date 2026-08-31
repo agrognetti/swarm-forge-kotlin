@@ -376,26 +376,45 @@
 
 (def ^:private compose-lambda-holder "ComposableSingletons$")
 
+(defn outside-source-tree
+  "`:outside-source-tree` when no `src` directory holds the row's source file.
+
+  The generic half of the generated-code question, and the only half that holds
+  for a single line as firmly as for a whole class. Compose Resources, KSP, kapt,
+  Room and BuildConfig all land in `build`, so this catches every generator
+  without naming any of them.
+
+  Split out because a line-level tool must not take the class-level answer below.
+  `mutate4kotlin` reports per mutant and reads the compiler's own line table, so
+  it can tell the author's lambda bodies from the library code inlined beside
+  them; a coverage report has no line-level provenance to consult."
+  [sources {:keys [package source]}]
+  (when (nil? (source-path sources package source)) :outside-source-tree))
+
 (defn generated-class
   "Why a coverage row is not the author's code, or nil when it is.
 
   Two questions, because one criterion cannot answer both:
 
-  `:outside-source-tree` - the class names a source file that exists nowhere
-  under any `src` directory. Compose Resources, KSP, kapt and BuildConfig all
-  land in `build`, so this catches every generator without naming any of them.
+  `:outside-source-tree` - as above.
 
   `:compose-lambda-holder` - the Compose compiler hoists the lambdas out of a
   composable into a synthetic `ComposableSingletons$<File>Kt` class. That class
   reports the author's own file as its source, so the first criterion cannot see
   it, and its line count is large enough to dominate a small module.
 
+  The second is a whole-class verdict on a class that is not wholly generated:
+  measured on a Compose POC, 32 of its lines were the author's hoisted lambda
+  bodies and 81 were inlined `Column.kt` and `Layout.kt`. It is used here anyway
+  because a coverage row carries no line to ask about, and scoring 81 lines of
+  library code beats losing the module's real number in them. Do not copy the
+  reasoning to a tool that does have line numbers.
+
   A tool that scores these is scoring the toolchain, not the work."
-  [sources {:keys [package class source]}]
-  (cond
-    (str/includes? (str class) compose-lambda-holder) :compose-lambda-holder
-    (nil? (source-path sources package source)) :outside-source-tree
-    :else nil))
+  [sources {:keys [class] :as row}]
+  (if (str/includes? (str class) compose-lambda-holder)
+    :compose-lambda-holder
+    (outside-source-tree sources row)))
 
 (def generated-reasons
   {:compose-lambda-holder "Compose compiler lambda holder"

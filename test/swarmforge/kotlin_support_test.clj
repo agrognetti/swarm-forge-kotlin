@@ -582,18 +582,59 @@
         (testing "and the scan still runs no build of its own"
           (is (str/includes? out "Scan performs no build")))))))
 
+(def ^:private app-kt-smap
+  "The SourceDebugExtension of a compiled Compose lambda holder, in the layout
+  measured on a real one: a `*S Kotlin` stratum saying which file each compiled
+  line was written in, then a `*S KotlinDebug` stratum saying which line of the
+  file being compiled pulled it in.
+
+  Shortened to two files and two ranges. Lines 1-4 are the author's App.kt; lines
+  11-13 are `Column.kt` lines 87-89, renumbered above the end of App.kt the way
+  the compiler does it.
+
+  The second stratum is a trap on purpose. It maps those same lines 11-13 back to
+  App.kt line 3, because that is the call site and a debugger wants to stop there.
+  A reader that took it would call every inlined line the author's own and would
+  restore the bug this fixture exists to catch."
+  (str "SMAP\n"
+       "App.kt\n"
+       "Kotlin\n"
+       "*S Kotlin\n"
+       "*F\n"
+       "+ 1 App.kt\n"
+       "com/example/ComposableSingletons$AppKt\n"
+       "+ 2 Column.kt\n"
+       "androidx/compose/foundation/layout/ColumnKt\n"
+       "*L\n"
+       "1#1,4:1\n"
+       "87#2,3:11\n"
+       "*S KotlinDebug\n"
+       "*F\n"
+       "+ 1 App.kt\n"
+       "com/example/ComposableSingletons$AppKt\n"
+       "*L\n"
+       "3#1:11,3\n"
+       "*E\n"))
+
 (def ^:private pitest-report
   "A PIT report shaped like the one measured on a real Compose module: one mutant
-  in the author's own class, one in the lambda holder the Compose compiler hoists
-  out of a composable, two in generated Compose Resources code, and two inside a
-  composable the author wrote - one on a call the Compose compiler inserted, one
-  on the author's own `if`. Blended that is 1 of 6 killed; the author's code is 1
-  of 2.
+  in the author's own class, two in the lambda holder the Compose compiler hoists
+  a composable's lambdas into, two in generated Compose Resources code, and two
+  inside a composable the author wrote - one on a call the Compose compiler
+  inserted, one on the author's own `if`. Blended that is 1 of 7 killed; the
+  author's code is 1 of 3.
+
+  The two in the holder are the pair that matters most, and they are why the
+  class-level verdict had to go. One sits on line 12, which the compiler's own
+  table attributes to `Column.kt`, and must be excluded. The other sits on line 3,
+  which is the author's own hoisted lambda body, and must be reported - it is a
+  surviving mutant on a hand-written conditional, which is exactly a missing test.
+  Excluding the class took both.
 
   The last two carry a methodDescription taking a Composer, because that is what
-  the Compose compiler does to a composable's signature and the only place the
-  rewriting is visible. They are the pair that matters: the first must be
-  excluded, and the second must not, or the tool hides a missing test."
+  the Compose compiler does to a composable's signature and the only place that
+  rewriting is visible. Same shape of pair: the first must be excluded, the second
+  must not."
   (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
        "<mutations partial=\"false\">\n"
        "<mutation detected=\"true\" status=\"KILLED\" numberOfTestsRun=\"2\">\n"
@@ -611,6 +652,15 @@
        "<lineNumber>12</lineNumber>\n"
        "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
        "<description>replaced return value with null</description>\n"
+       "</mutation>\n"
+       "<mutation detected=\"false\" status=\"SURVIVED\" numberOfTestsRun=\"1\">\n"
+       "<sourceFile>App.kt</sourceFile>\n"
+       "<mutatedClass>com.example.ComposableSingletons$AppKt</mutatedClass>\n"
+       "<mutatedMethod>lambda$0</mutatedMethod>\n"
+       "<methodDescription>(Landroidx/compose/runtime/Composer;I)Lkotlin/Unit;</methodDescription>\n"
+       "<lineNumber>3</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.NegateConditionalsMutator</mutator>\n"
+       "<description>negated conditional</description>\n"
        "</mutation>\n"
        "<mutation detected=\"false\" status=\"NO_COVERAGE\" numberOfTestsRun=\"0\">\n"
        "<sourceFile>Res.kt</sourceFile>\n"
@@ -649,9 +699,10 @@
        "</mutations>\n"))
 
 (deftest mutate4kotlin-reports-the-authors-mutants-not-the-generators
-  ;; The same policy coverage already applies. Without it, three of this report's
-  ;; four mutants are survivors nobody wrote and no test can be asked to kill,
-  ;; and they would be presented at the top of the list as missing tests.
+  ;; The same policy coverage already applies. Without it, four of this report's
+  ;; seven mutants are survivors nobody wrote and no test can be asked to kill,
+  ;; and they would be presented at the top of the list as missing tests. With too
+  ;; much of it, two the author did write disappear instead.
   (with-tree ["settings.gradle.kts"
               "shared/src/commonMain/kotlin/com/example/Greeting.kt"
               "shared/build/generated/compose/resourceGenerator/kotlin/poc/generated/resources/Res.kt"]
@@ -659,31 +710,42 @@
       (init-repo! root)
       (write! (fs/path root "shared/src/commonMain/kotlin/com/example/App.kt")
               "@Composable\nfun App(on: Boolean) {\n    if (on) Text(\"hi\")\n}\n")
+      ;; The compiled class, for its line table alone. `smap-text` reads the table
+      ;; out of the raw bytes rather than parsing the class format, so a file
+      ;; holding the attribute is the whole fixture - and writing one keeps this
+      ;; test from needing a Kotlin compiler to prove a line-attribution rule.
+      (write! (fs/path root "shared/build/classes/kotlin/android/main/com/example"
+                       "ComposableSingletons$AppKt.class")
+              app-kt-smap)
       (fake-gradlew! root "pitest" [pitest-task] true)
       (write! (fs/path root "shared/build/reports/pitest/mutations.xml") pitest-report)
       (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb")]
         (is (zero? exit))
         (testing "the headline counts the author's mutants"
-          (is (str/includes? out "mutants: 2"))
-          (is (str/includes? out "mutation coverage 50.0%")))
+          (is (str/includes? out "mutants: 3"))
+          (is (str/includes? out "mutation coverage 33.3%")))
         (testing "the excluded ones are named by reason, not silently dropped"
           (is (str/includes? out "4 mutants excluded"))
-          (is (str/includes? out "Compose compiler lambda holder"))
           (is (str/includes? out "no source file under any src directory"))
           (is (str/includes? out "call the Compose compiler inserted")))
+        (testing "an inlined mutant names the file it was inlined from"
+          (is (str/includes? out "inlined from Column.kt")))
         (testing "the number that includes them is still printed"
           (is (str/includes? out "every mutant"))
-          (is (str/includes? out "mutation coverage 16.7%  (6 mutants)")))
+          (is (str/includes? out "mutation coverage 14.3%  (7 mutants)")))
         (testing "no generated mutant is presented as a missing test"
-          (is (not (str/includes? out "ComposableSingletons")))
+          (is (not (str/includes? out "getLambda-1")))
           (is (not (str/includes? out "traceEventStart"))))
-        ;; The half of the policy that is easy to lose. The author's own `if` sits
-        ;; inside a composable, in a method the Compose compiler rewrote, one line
-        ;; away from an excluded mutant - and it is a missing test, so it has to be
-        ;; reported. A filter that took the whole method would read as a cleaner
-        ;; report and would be hiding work.
-        (testing "but the author's own conditional inside a composable is"
-          (is (str/includes? out "1 surviving mutant(s)"))
+        ;; The half of the policy that is easy to lose, and the half a class-level
+        ;; verdict loses. Both of these are hand-written conditionals that no test
+        ;; kills, and both sit in code the Compose compiler moved or rewrote: one
+        ;; hoisted into the synthetic lambda holder, one left in a method that
+        ;; gained a Composer parameter. A filter taking either whole container
+        ;; would read as a cleaner report and would be hiding work.
+        (testing "but the author's own conditionals are, wherever Compose put them"
+          (is (str/includes? out "2 surviving mutant(s)"))
+          (is (str/includes? out "ComposableSingletons$AppKt.lambda$0 (App.kt:3)"))
+          (is (str/includes? out "AppKt.App (App.kt:3)"))
           (is (str/includes? out "negated conditional")))))))
 
 (deftest a-task-whose-class-gradle-will-not-print-is-a-tool-defect
