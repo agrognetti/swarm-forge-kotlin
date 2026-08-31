@@ -499,8 +499,8 @@
          "- Constitution tools: `swarm_tool.sh require kover` (also crap4kotlin, dry4kotlin, detekt, mutate4kotlin"
          (when acceptance? ", aps-kotlin, gherkin-parser, ir-dry-checker, gherkin-mutator")
          "). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies and do not add Gradle plugins by hand to obtain a measurement; the tools apply what they need.\n"
-         "- Run constitution tools one at a time. Two Gradle invocations in one worktree at once corrupt each other's daemon and produce numbers you cannot trust. Worker-limited tools use `--max-workers 4` or `--workers 4`. Mutation is differential: no `--mutate-all`"
-         (when acceptance? ", no `--level full`")
+         "- Run constitution tools one at a time. Two Gradle invocations in one worktree at once corrupt each other's daemon and produce numbers you cannot trust. Worker-limited tools use `--max-workers 4` or `--workers 4`. A `mutate4kotlin` run is a full run every time; narrow it with `--module :name`"
+         (when acceptance? ", and keep Gherkin mutation at `--level hard`")
          ".\n"
          "- Do not clone tool repositories into `./tmp`.\n"
          "- If merge_and_process.sh or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"

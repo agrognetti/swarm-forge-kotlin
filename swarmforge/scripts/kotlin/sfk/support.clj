@@ -49,6 +49,23 @@
       (str (fs/parent (if (fs/absolute? path) path (fs/absolutize path)))))
     (worktree-root)))
 
+;; Resolved while this file loads, not when the function runs. `*file*` is bound
+;; during load and reverts to NO_SOURCE_PATH afterwards, so reading it inside the
+;; function body would answer with the caller's file, or with nothing at all.
+(def ^:private support-file (fs/absolutize *file*))
+
+(defn templates-dir
+  "Where the tools keep the files they hand to Gradle and to the project.
+  Beside the scripts, so a worktree that has the scripts has the templates."
+  [& parts]
+  (let [dir (fs/parent (fs/parent support-file))
+        path (apply fs/path dir "templates" parts)]
+    (when-not (fs/exists? path)
+      (die! (str "Missing template " path)
+            "The Kotlin constitution tools ship templates next to the scripts."
+            "Re-sync the worktree scripts."))
+    (str path)))
+
 (defn state-dir
   "Per-worktree scratch for tool output. Ignored by git."
   [& parts]

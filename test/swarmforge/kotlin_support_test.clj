@@ -386,45 +386,51 @@
   printing no Type section, and nil to answer that no such task exists.
 
   Every other invocation fails, so a tool that runs a task it did not verify
-  shows up in the output instead of passing quietly."
-  [root task types]
-  (let [path (fs/path root "gradlew")
-        not-found (str "echo \"> Task '$want' not found in root project"
-                       " 'fixture' and its subprojects.\" >&2\nexit 1\n")
-        body (if (nil? types)
-               not-found
-               (str "cat <<'SFKEOF'\n"
-                    "Detailed task information for " task "\n\n"
-                    "Path\n"
-                    "     :shared:" task "\n\n"
-                    (when (seq types)
-                      (str "Type\n"
-                           (str/join (for [t types]
-                                       (str "     " (last (str/split t #"\."))
-                                            " (" t ")\n")))
-                           "\n"))
-                    "Options\n"
-                    "     --rerun     Causes the task to be re-run even if up-to-date.\n\n"
-                    ;; Prose ending in a parenthesised class name. A pattern loose
-                    ;; enough to span sections would read this as the task's type.
-                    "Description\n"
-                    "     Runs it (org.example.NotAType)\n\n"
-                    "Group\n"
-                    "     verification\n"
-                    "SFKEOF\n"
-                    "exit 0\n"))]
-    (write! path
-            (str "#!/bin/sh\n"
-                 "want=\n"
-                 "for a in \"$@\"; do\n"
-                 "  if [ \"$flag\" = 1 ]; then want=$a; flag=; fi\n"
-                 "  if [ \"$a\" = --task ]; then flag=1; fi\n"
-                 "done\n"
-                 "if [ \"$want\" != \"" task "\" ]; then\n"
-                 not-found
-                 "fi\n"
-                 body))
-    (fs/set-posix-file-permissions path "rwxr-xr-x")))
+  shows up in the output instead of passing quietly. `run-ok?` opts out for the
+  one case that needs it: reaching the reporting code with a report the test
+  wrote itself, which is the only way to exercise it without a real PIT run."
+  ([root task types] (fake-gradlew! root task types false))
+  ([root task types run-ok?]
+   (let [path (fs/path root "gradlew")
+         not-found (str "echo \"> Task '$want' not found in root project"
+                        " 'fixture' and its subprojects.\" >&2\nexit 1\n")
+         body (if (nil? types)
+                not-found
+                (str "cat <<'SFKEOF'\n"
+                     "Detailed task information for " task "\n\n"
+                     "Path\n"
+                     "     :shared:" task "\n\n"
+                     (when (seq types)
+                       (str "Type\n"
+                            (str/join (for [t types]
+                                        (str "     " (last (str/split t #"\."))
+                                             " (" t ")\n")))
+                            "\n"))
+                     "Options\n"
+                     "     --rerun     Causes the task to be re-run even if up-to-date.\n\n"
+                     ;; Prose ending in a parenthesised class name. A pattern loose
+                     ;; enough to span sections would read this as the task's type.
+                     "Description\n"
+                     "     Runs it (org.example.NotAType)\n\n"
+                     "Group\n"
+                     "     verification\n"
+                     "SFKEOF\n"
+                     "exit 0\n"))]
+     (write! path
+             (str "#!/bin/sh\n"
+                  "want=\n"
+                  "for a in \"$@\"; do\n"
+                  "  if [ \"$flag\" = 1 ]; then want=$a; flag=; fi\n"
+                  "  if [ \"$a\" = --task ]; then flag=1; fi\n"
+                  "  if [ \"$a\" = \"" task "\" ]; then asked=1; fi\n"
+                  "done\n"
+                  (when run-ok?
+                    (str "if [ -z \"$want\" ] && [ \"$asked\" = 1 ]; then exit 0; fi\n"))
+                  "if [ \"$want\" != \"" task "\" ]; then\n"
+                  not-found
+                  "fi\n"
+                  body))
+     (fs/set-posix-file-permissions path "rwxr-xr-x"))))
 
 (def ^:private pitest-task "info.solidsoft.gradle.pitest.PitestTask")
 
@@ -441,13 +447,16 @@
       (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
         (is (not (zero? exit)))
         (testing "it names what it found and what it wanted"
-          (is (str/includes? err "is not the info.solidsoft.pitest task"))
+          (is (str/includes? err "it is not the pitest plugin's task"))
           (is (str/includes? err "found:    org.gradle.api.tasks.JavaExec"))
           (is (str/includes? err "expected: a class under info.solidsoft.gradle.pitest.")))
         (testing "it quotes the rule rather than just refusing"
           (is (str/includes? err "Do not invent project-local")))
+        (testing "and it says the task is not needed, so deleting it is the fix"
+          (is (str/includes? err "Delete that task. This tool does not need it")))
         (testing "and it stops before running anything"
-          (is (not (str/includes? err "Mutation testing could not complete"))))))))
+          (is (not (str/includes? err "Mutation testing could not complete")))
+          (is (not (str/includes? err "asking gradle for the classpath"))))))))
 
 (deftest mutate4kotlin-runs-the-plugins-own-pitest-task
   ;; The gate has to open for the real task, or the fix is just a new false
@@ -484,19 +493,164 @@
           (is (zero? exit))
           (is (str/includes? out "pitest task: absent")))))))
 
-(deftest mutate4kotlin-explains-why-a-kmp-module-has-no-pitest-task
+(deftest no-pitest-task-is-the-command-line-path-not-a-refusal
   ;; Verified in gradle-pitest-plugin-1.19.0.jar: apply() wires the extension and
   ;; the task inside plugins.withType(JavaPlugin). KMP never applies the java
-  ;; plugin, so "add the plugin" on its own is advice that cannot work.
+  ;; plugin, so the plugin registers nothing there - which means "add the plugin"
+  ;; was advice that could not work, and refusing was refusing the normal case.
+  ;; PIT needs a classpath, not a source set, so the tool asks Gradle for one and
+  ;; drives PIT itself.
   (with-tree ["settings.gradle.kts"]
     (fn [root]
       (init-repo! root)
       (fake-gradlew! root "pitest" nil)
       (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
-        (is (not (zero? exit)))
-        (is (str/includes? err "does not exist in this project"))
-        (is (str/includes? err "plugins.withType(JavaPlugin)"))
-        (is (str/includes? err "registers no task at all"))))))
+        (testing "it goes to Gradle for the classpath instead of giving up"
+          (is (str/includes? err "asking gradle for the classpath and code paths")))
+        (testing "and it does not send anyone to change a build script"
+          (is (not (str/includes? err "does not exist in this project")))
+          (is (not (str/includes? err "Add it to the module's build script"))))
+        (testing "the fake wrapper fails that build, so the run still ends here"
+          (is (not (zero? exit)))
+          (is (str/includes? err "failure here is a failure in the project")))))))
+
+(defn- dump-tsv
+  "One report file shaped the way the init script writes it: key and value
+  separated by a tab, and lists of paths joined with the platform path separator."
+  [pairs]
+  (str (str/join "\n"
+                 (for [[k v] pairs]
+                   (str k "\t" (if (coll? v)
+                                 (str/join java.io.File/pathSeparator (map str v))
+                                 (str v)))))
+       "\n"))
+
+(deftest scan-lists-the-candidate-runs-and-why-one-of-them-cannot-run
+  ;; Measured on the real project: :shared compiles four test classes and
+  ;; :androidApp has a JVM test task with nothing in it. PIT started against an
+  ;; empty suite fails, and that failure reads like a broken build rather than an
+  ;; empty source set, so the tool says which it is before running anything.
+  (with-tree ["settings.gradle.kts"
+              "androidApp/src/main/kotlin/com/example/MainActivity.kt"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" nil)
+      ;; A commented-out package line above the real one. A regex over the whole
+      ;; file would read the first `package` word it saw, wherever it sat.
+      (write! (fs/path root "shared/src/commonMain/kotlin/com/example/Greeting.kt")
+              "// package com.example.commented.out\npackage com.example\n")
+      (touch! (fs/path root "shared/build/classes/kotlin/android/hostTest"
+                       "com/example/GreetingTest.class"))
+      ;; The Android module's test class directory exists and is empty, which is
+      ;; exactly the state a module with no tests of its own is in.
+      (fs/create-dirs (fs/path root "androidApp/build/intermediates/javac/classes"))
+      (let [dump (fs/path root ".swarmforge" "kotlin" "mutation" "pitest.d")]
+        (write! (fs/path dump "shared.0.tsv")
+                (dump-tsv [["project" ":shared"]
+                           ["projectDir" (fs/path root "shared")]
+                           ["buildDir" (fs/path root "shared/build")]
+                           ["testEngine" "junit4"]
+                           ["testTask" ":shared:testAndroidHostTest"]
+                           ["testClassesDirs"
+                            [(fs/path root "shared/build/classes/kotlin/android/hostTest")]]
+                           ["mutableCodePaths" [(fs/path root "shared/build/classes.jar")]]
+                           ["sourceDirs" [(fs/path root "shared/src/commonMain/kotlin")]]]))
+        (write! (fs/path dump "androidApp.0.tsv")
+                (dump-tsv [["project" ":androidApp"]
+                           ["projectDir" (fs/path root "androidApp")]
+                           ["buildDir" (fs/path root "androidApp/build")]
+                           ["testEngine" "junit4"]
+                           ["testTask" ":androidApp:testDebugUnitTest"]
+                           ["testClassesDirs"
+                            [(fs/path root "androidApp/build/intermediates/javac/classes")]]
+                           ["mutableCodePaths"
+                            [(fs/path root "androidApp/build/classes.jar")]]
+                           ["sourceDirs" [(fs/path root "androidApp/src")]]])))
+      (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb" "--scan")]
+        (is (zero? exit))
+        (testing "an absent plugin task is reported as the command-line path"
+          (is (str/includes? out "pitest task: absent"))
+          (is (str/includes? out "mode: PIT's command line")))
+        (testing "the runnable candidate names its test count and its scope"
+          (is (str/includes? out ":shared :shared:testAndroidHostTest"))
+          (is (str/includes? out "1 test class(es), com.example.*")))
+        (testing "and the package from the commented-out line is not in scope"
+          (is (not (str/includes? out "com.example.commented.out"))))
+        (testing "the module with no tests says so instead of being dropped"
+          (is (str/includes? out ":androidApp :androidApp:testDebugUnitTest"))
+          (is (str/includes? out "no compiled test classes")))
+        (testing "and the scan still runs no build of its own"
+          (is (str/includes? out "Scan performs no build")))))))
+
+(def ^:private pitest-report
+  "A PIT report shaped like the one measured on a real Compose module: one mutant
+  in the author's own class, one in the lambda holder the Compose compiler hoists
+  out of a composable, and two in generated Compose Resources code. Blended that
+  is 1 of 4 killed; the author's code is 1 of 1."
+  (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       "<mutations partial=\"false\">\n"
+       "<mutation detected=\"true\" status=\"KILLED\" numberOfTestsRun=\"2\">\n"
+       "<sourceFile>Greeting.kt</sourceFile>\n"
+       "<mutatedClass>com.example.Greeting</mutatedClass>\n"
+       "<mutatedMethod>greet</mutatedMethod>\n"
+       "<lineNumber>5</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
+       "<description>replaced return value with null</description>\n"
+       "</mutation>\n"
+       "<mutation detected=\"false\" status=\"SURVIVED\" numberOfTestsRun=\"1\">\n"
+       "<sourceFile>App.kt</sourceFile>\n"
+       "<mutatedClass>com.example.ComposableSingletons$AppKt</mutatedClass>\n"
+       "<mutatedMethod>getLambda-1</mutatedMethod>\n"
+       "<lineNumber>12</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
+       "<description>replaced return value with null</description>\n"
+       "</mutation>\n"
+       "<mutation detected=\"false\" status=\"NO_COVERAGE\" numberOfTestsRun=\"0\">\n"
+       "<sourceFile>Res.kt</sourceFile>\n"
+       "<mutatedClass>poc.generated.resources.Res</mutatedClass>\n"
+       "<mutatedMethod>getUri</mutatedMethod>\n"
+       "<lineNumber>9</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
+       "<description>replaced return value with null</description>\n"
+       "</mutation>\n"
+       "<mutation detected=\"false\" status=\"NO_COVERAGE\" numberOfTestsRun=\"0\">\n"
+       "<sourceFile>Res.kt</sourceFile>\n"
+       "<mutatedClass>poc.generated.resources.Res</mutatedClass>\n"
+       "<mutatedMethod>getPath</mutatedMethod>\n"
+       "<lineNumber>14</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
+       "<description>replaced return value with null</description>\n"
+       "</mutation>\n"
+       "</mutations>\n"))
+
+(deftest mutate4kotlin-reports-the-authors-mutants-not-the-generators
+  ;; The same policy coverage already applies. Without it, three of this report's
+  ;; four mutants are survivors nobody wrote and no test can be asked to kill,
+  ;; and they would be presented at the top of the list as missing tests.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/Greeting.kt"
+              "shared/build/generated/compose/resourceGenerator/kotlin/poc/generated/resources/Res.kt"]
+    (fn [root]
+      (init-repo! root)
+      (write! (fs/path root "shared/src/commonMain/kotlin/com/example/App.kt")
+              "@Composable\nfun App() {}\n")
+      (fake-gradlew! root "pitest" [pitest-task] true)
+      (write! (fs/path root "shared/build/reports/pitest/mutations.xml") pitest-report)
+      (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb")]
+        (is (zero? exit))
+        (testing "the headline counts the author's mutants"
+          (is (str/includes? out "mutants: 1"))
+          (is (str/includes? out "mutation coverage 100.0%")))
+        (testing "the excluded ones are named by reason, not silently dropped"
+          (is (str/includes? out "3 mutants excluded"))
+          (is (str/includes? out "Compose compiler lambda holder"))
+          (is (str/includes? out "no source file under any src directory")))
+        (testing "the number that includes them is still printed"
+          (is (str/includes? out "every mutant"))
+          (is (str/includes? out "mutation coverage 25.0%  (4 mutants)")))
+        (testing "and no generated mutant is presented as a missing test"
+          (is (str/includes? out "No surviving mutants"))
+          (is (not (str/includes? out "ComposableSingletons"))))))))
 
 (deftest a-task-whose-class-gradle-will-not-print-is-a-tool-defect
   ;; The third state. Accepting would restore the defect; blaming the project

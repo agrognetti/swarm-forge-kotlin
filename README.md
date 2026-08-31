@@ -223,14 +223,18 @@ Installed tools become executable wrappers in `.swarmforge/bin/`, which is on ev
 | `crap4kotlin` | CRAP score from the Kover XML plus cyclomatic complexity. Excludes generated classes and compiler-generated members, and says how many of each it hid. Declares `kover` as a dependency, so `ensure crap4kotlin` installs both. |
 | `dry4kotlin` | Duplicate detection with PMD CPD, over Kotlin **and** Swift. |
 | `detekt` | Static analysis through the detekt CLI. No upstream counterpart. |
-| `mutate4kotlin` | Code mutation with PIT through `gradle-pitest-plugin`. |
+| `mutate4kotlin` | Code mutation with PIT. Runs the pitest Gradle plugin's task where the plugin registers one, and drives PIT's own command line where it does not — which is every Kotlin Multiplatform module. |
 | `aps-kotlin` | The acceptance pipeline: entry-point generator, runtime, test runner, and the `gherkin-mutator` runner adapter. |
 
 ### Mutation
 
-`mutate4kotlin` does not modify your build. If the `pitest` task is missing it prints the exact plugin block to add and exits, rather than editing `build.gradle.kts` behind your back. Its state lives in `.mutate4kotlin/`: `manifest.json`, `exclusions.txt`, and PIT's own `history.txt`, which is what makes differential runs differential.
+`mutate4kotlin` does not modify your build, and on Kotlin Multiplatform there is nothing it could ask you to add. `gradle-pitest-plugin` creates its extension and its task inside `plugins.withType(JavaPlugin)`, and a KMP module never applies the java plugin, so the plugin applies without complaint and registers no task at all. Instead of reporting that as a missing dependency, the tool asks Gradle once — through an injected init script, writing to no project file — for the test classpath, the module's own compiled output and its source directories, and then drives PIT's own command line. PIT has no such limitation: it wants a classpath, not a source set. Where the plugin *does* register a task, that task runs instead. Either way the number is produced by PIT inside the tool, never by a task the project wrote.
 
-It asks Gradle which class implements the task, not merely whether the name resolves. A task named `pitest` that is a plain `JavaExec` is refused by name, class, and reason, because running it would put a number in front of you that no constitution tool produced. `mutate4kotlin --scan` prints the class it found and performs no build. `kover` gates the same way on `kotlinx.kover.`.
+State lives in `.mutate4kotlin/`: `manifest.json` and `exclusions.txt`. No history file, and no differential runs. PIT's open-source build dropped its file-based history store between 1.22.1 and 1.25.9 — `ErroringHistoryFactory` replaced `DefaultHistoryFactory`, and no `HistoryFactory` is registered — so incremental analysis is a commercial plugin now and asking for it ends the run before the first mutant. Every run is a full run.
+
+`--module :shared` narrows a multi-module build to one module. `--scan` prints what the tool would do, including the candidate runs cached from the last real run, and performs no build.
+
+It asks Gradle which class implements the `pitest` task, not merely whether the name resolves. A task named `pitest` that is a plain `JavaExec` is refused by name, class, and reason — not because the tool needs that task, but because it writes into the same `build/reports/pitest` directory, so leaving both in place makes it impossible to say which run a report came from. `kover` gates the same way on `kotlinx.kover.`.
 
 Every line in `exclusions.txt` is a class glob followed by `# reason`. A line without a reason is a hard error, not a warning — an unexplained exclusion is a hole in the mutation gate that reads as a pass.
 

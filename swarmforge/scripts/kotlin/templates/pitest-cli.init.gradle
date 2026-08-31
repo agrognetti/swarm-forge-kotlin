@@ -1,0 +1,204 @@
+// Injected with --init-script by `mutate4kotlin` on a project where the pitest
+// Gradle plugin cannot work.
+//
+// It adds one read-only reporting task and changes nothing else about the build.
+// No project file is touched, so a role that does not own the build can still
+// run mutation testing.
+//
+// Why this exists: gradle-pitest-plugin creates its extension and its task
+// inside plugins.withType(JavaPlugin), and a Kotlin Multiplatform module never
+// applies the java plugin, so the plugin registers nothing there. PIT itself has
+// no such limitation - it mutates JVM bytecode and needs a classpath, not a
+// source set. So the tool asks Gradle once for everything PIT needs, then drives
+// PIT's own command line. The measurement stays inside the constitution tool
+// rather than moving into a hand-written task in the project.
+//
+// Output, one file per Test task, tab separated key and value:
+//     project, projectDir, buildDir, pitestClasspath, testEngine,
+//     testTask, java, testClassesDirs, classpath, mutableCodePaths, sourceDirs
+//
+// Each file fully describes one candidate mutation run, so the caller never has
+// to join two of them together.
+//
+// The task depends on the Test tasks' classpath and class directories rather
+// than on the Test tasks themselves: that compiles production and test code
+// without running the tests.
+
+def outDirProperty = System.getProperty("mutate4kotlin.dir")
+def pitestVersion = System.getProperty("mutate4kotlin.pitest.version")
+def junit5PluginVersion = System.getProperty("mutate4kotlin.junit5.version")
+
+gradle.allprojects { project ->
+    project.tasks.register("mutate4kotlinDumpPitest") { reportTask ->
+        reportTask.group = "verification"
+        reportTask.description =
+            "Reports the classpath and code paths PIT needs, for mutate4kotlin."
+
+        def testTasks =
+            project.tasks.withType(org.gradle.api.tasks.testing.Test).toList()
+
+        reportTask.dependsOn({
+            testTasks.collect { [it.classpath, it.testClassesDirs] }.flatten()
+        })
+
+        // Everything the report needs is read here, while the build is being
+        // configured, and only the finished text is handed to doLast. Reading the
+        // project model at execution time is what the configuration cache
+        // forbids, and a report task is not a reason to make the project give
+        // that up.
+        def projectPath = project.path
+        def projectDir = project.projectDir.absolutePath
+        def buildDir = project.layout.buildDirectory.get().asFile.absolutePath
+        def separator = File.pathSeparator
+        def joinPaths = { files -> files.collect { it.absolutePath }.join(separator) }
+
+        // Every compilation of this project that emits JVM bytecode, whichever
+        // Kotlin plugin declared it. The multiplatform extension exposes
+        // `targets`; the single-target Android and JVM extensions expose one
+        // `target` instead. Neither shape is a superset of the other, and a
+        // script that knows only one silently reports nothing for the other.
+        def jvmCompilations = []
+        def kotlin = project.extensions.findByName("kotlin")
+        if (kotlin != null) {
+            def targets = []
+            try { targets = kotlin.targets.toList() } catch (Throwable ignored) { }
+            if (targets.isEmpty()) {
+                try { targets = [kotlin.target] } catch (Throwable ignored) { }
+            }
+            targets.each { target ->
+                def platform = null
+                try { platform = target.platformType?.toString() } catch (Throwable ignored) { }
+                if (platform == 'jvm' || platform == 'androidJvm') {
+                    try {
+                        target.compilations.each { jvmCompilations << it }
+                    } catch (Throwable ignored) { }
+                }
+            }
+        }
+
+        // Where the sources of the code a given test task exercises live. PIT
+        // requires this and uses it to show the mutated line; it is not what
+        // decides which code is mutated.
+        //
+        // Found by asking which compilation produced the test classes and what
+        // that compilation is associated with, rather than by looking for a
+        // compilation called `main`. Multiplatform calls it `main`, the Android
+        // plugin calls it `debug`, and a directory pattern would guess at both.
+        def sourceDirsOf = { testTask ->
+            def testDirPaths =
+                testTask.testClassesDirs.files.collect { it.absolutePath } as Set
+            def classesOf = { compilation ->
+                try { compilation.output.classesDirs.files } catch (Throwable ignored) { [] }
+            }
+            def owning = jvmCompilations.findAll { compilation ->
+                classesOf(compilation).any { testDirPaths.contains(it.absolutePath) }
+            }
+            def mainCompilations = [] as LinkedHashSet
+            owning.each { compilation ->
+                try {
+                    compilation.associateWith.each { mainCompilations.add(it) }
+                } catch (Throwable ignored) { }
+            }
+            if (mainCompilations.isEmpty()) {
+                mainCompilations.addAll(jvmCompilations.findAll { it.name == 'main' })
+            }
+            def dirs = [] as LinkedHashSet
+            mainCompilations.each { compilation ->
+                try {
+                    compilation.allKotlinSourceSets.each { sourceSet ->
+                        sourceSet.kotlin.srcDirs.each { dir ->
+                            if (dir.isDirectory()) dirs.add(dir)
+                        }
+                    }
+                } catch (Throwable ignored) { }
+            }
+            // PIT refuses to start without --sourceDirs, so a model this script
+            // could not read must not turn into an empty value. The module's own
+            // src tree is a worse answer than the compilation's, and a far better
+            // one than none.
+            if (dirs.isEmpty()) {
+                def src = new File(projectDir, 'src')
+                if (src.isDirectory()) dirs.add(src)
+            }
+            dirs
+        }
+
+        // PIT's own jars, resolved through the project's repositories rather than
+        // downloaded by hand, so its transitive dependencies come along and the
+        // project's mirror or proxy settings are honoured.
+        def pitestClasspath = ''
+        def testReports = []
+        if (!testTasks.isEmpty() && pitestVersion != null) {
+            def coordinates = ["org.pitest:pitest-command-line:${pitestVersion}"]
+            // JUnit 5 needs a PIT plugin; JUnit 4 is supported natively. Which
+            // one this module runs is a fact about its test runtime classpath,
+            // not something to advise the operator to guess at.
+            def junit5 = testTasks.any { testTask ->
+                testTask.classpath.files.any { file ->
+                    file.name.startsWith('junit-platform-engine') ||
+                        file.name.startsWith('junit-jupiter-engine')
+                }
+            }
+            if (junit5 && junit5PluginVersion != null) {
+                coordinates << "org.pitest:pitest-junit5-plugin:${junit5PluginVersion}"
+            }
+            def dependencies = coordinates.collect { project.dependencies.create(it) }
+            pitestClasspath = joinPaths(
+                project.configurations
+                    .detachedConfiguration(dependencies as org.gradle.api.artifacts.Dependency[])
+                    .files)
+
+            testTasks.each { testTask ->
+                def testDirs = testTask.testClassesDirs.files.collect { it.absolutePath } as Set
+                // Without a mutable code path PIT mutates the test classes too,
+                // because they sit in the production package, and a mutant inside
+                // a test cannot be killed by construction. What belongs to this
+                // module is what Gradle put under this module's build directory;
+                // everything else on the classpath is a dependency.
+                def mutable = testTask.classpath.files.findAll { file ->
+                    file.absolutePath.startsWith(buildDir + File.separator) &&
+                        !testDirs.contains(file.absolutePath)
+                }
+                def javaExecutable
+                try {
+                    javaExecutable = testTask.javaLauncher.get().executablePath.asFile.absolutePath
+                } catch (Throwable ignored) {
+                    javaExecutable = new File(System.getProperty('java.home'), 'bin/java').absolutePath
+                }
+                testReports << [
+                    ['project', projectPath],
+                    ['projectDir', projectDir],
+                    ['buildDir', buildDir],
+                    ['pitestClasspath', pitestClasspath],
+                    ['testEngine', junit5 ? 'junit5' : 'junit4'],
+                    ['testTask', testTask.path],
+                    ['java', javaExecutable],
+                    ['testClassesDirs', joinPaths(testTask.testClassesDirs.files)],
+                    ['classpath', joinPaths(testTask.classpath.files)],
+                    ['mutableCodePaths', joinPaths(mutable)],
+                    ['sourceDirs', joinPaths(sourceDirsOf(testTask))],
+                ]
+            }
+        }
+
+        def stem = projectPath == ':' ? 'root'
+            : projectPath.replace(':', '_').replaceFirst('^_', '')
+
+        reportTask.doLast {
+            if (outDirProperty == null) {
+                throw new org.gradle.api.GradleException(
+                    "mutate4kotlinDumpPitest needs -Dmutate4kotlin.dir=<directory>")
+            }
+            if (pitestVersion == null) {
+                throw new org.gradle.api.GradleException(
+                    "mutate4kotlinDumpPitest needs -Dmutate4kotlin.pitest.version=<version>")
+            }
+            def outDir = new File(outDirProperty)
+            outDir.mkdirs()
+            testReports.eachWithIndex { pairs, index ->
+                def text = pairs.collect { it[0] + '\t' + it[1] }.join('\n') + '\n'
+                new File(outDir, "${stem}.${index}.tsv").text = text
+            }
+        }
+    }
+}

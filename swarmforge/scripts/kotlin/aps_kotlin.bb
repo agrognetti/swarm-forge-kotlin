@@ -341,14 +341,6 @@
 
 (def scaffold-files ["ApsJson.kt" "ApsRuntime.kt" "ApsStepHandlers.kt"])
 
-(defn templates-dir []
-  (let [dir (fs/path (fs/parent (fs/absolutize *file*)) "templates")]
-    (when-not (fs/exists? dir)
-      (s/die! (str "Missing template directory " dir)
-              "The Kotlin constitution tools ship templates next to the scripts."
-              "Re-sync the worktree scripts."))
-    dir))
-
 (def ^:private test-source-set-preference
   ["androidUnitTest" "jvmTest" "test"])
 
@@ -384,17 +376,16 @@
   (let [package (or (when (string? (get flags "--package")) (get flags "--package")) default-package)
         force? (boolean (get flags "--force"))
         source-root (find-test-source-root (get flags "--dir"))
-        target-dir (str (fs/path source-root (str/replace package "." "/")))
-        templates (templates-dir)]
+        target-dir (str (fs/path source-root (str/replace package "." "/")))]
     (fs/create-dirs target-dir)
     (s/heading "Acceptance scaffold (aps-kotlin scaffold)")
     (println (format "Package: %s" package))
     (println (format "Into   : %s" (relative target-dir)))
     (println)
     (doseq [name-of scaffold-files]
-      (let [source (fs/path templates name-of)
+      (let [source (s/templates-dir name-of)
             target (fs/path target-dir name-of)
-            body (str/replace (slurp (str source)) "package acceptance" (str "package " package))]
+            body (str/replace (slurp source) "package acceptance" (str "package " package))]
         (cond
           (and (fs/exists? target) (not force?))
           (println (format "  kept      %s (already present)" name-of))
@@ -425,7 +416,7 @@
   even at --workers 4."
   []
   (let [out-dir (fs/path (s/state-dir "aps") "classpath.d")
-        init (fs/path (templates-dir) "aps-classpath.init.gradle")]
+        init (s/templates-dir "aps-classpath.init.gradle")]
     (fs/delete-tree (str out-dir))
     (fs/create-dirs out-dir)
     (s/progress "asking Gradle for the test runtime classpath (once)")
