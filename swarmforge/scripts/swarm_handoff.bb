@@ -848,6 +848,14 @@
 
 (defn write-handoffs! [ctx]
   (let [forward (write-handoff! (assoc ctx :reverse? false))
+        ;; The last role in a pack has nobody ahead of it, so its role prompt
+        ;; addresses the role behind it - which is the same role back-one names.
+        ;; The forward copy is already non-forwarding and already carries the
+        ;; handback body, so queueing the reverse copy too hands that role the
+        ;; same commit twice and it merges and verifies the same work twice.
+        ;; Skip a reverse copy to anyone already on the forward handoff; packs
+        ;; deep enough for the two to differ are untouched.
+        forward-recipients (set (:recipients ctx))
         reverse (when (= "git_handoff" (get-in ctx [:headers "type"]))
                   (mapv (fn [role]
                           (write-handoff! (assoc ctx
@@ -855,7 +863,7 @@
                                                  :priority "00"
                                                  :non-forwarding true
                                                  :reverse? true)))
-                        (reverse-roles (:sender ctx))))]
+                        (remove forward-recipients (reverse-roles (:sender ctx)))))]
     (into [forward] reverse)))
 
 (defn error-report [draft errors]

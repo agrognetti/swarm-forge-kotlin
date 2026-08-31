@@ -1443,8 +1443,10 @@
 
 (deftest swarm-handoff-architect-back-all-writes-upstream-copies
   ;; Given four-pack architect last with back-all
-  ;; When it queues git_handoff
-  ;; Then specifier, coder, and refactorer get merge-only copies
+  ;; When it queues git_handoff to specifier, the role its own prompt addresses
+  ;; Then specifier, coder, and refactorer each get one merge-only copy - the
+  ;; specifier's is the forward one, since back-all names it too and a second
+  ;; copy would hand it the same commit twice
   (let [root (tmp-dir)
         _ (init-repo! root)
         _ (setup-project! root four-pack-role-rows)
@@ -1452,24 +1454,22 @@
         result (queue-git-from! root "architect" "specifier" "HTW")
         extra "Please also rewrite the layout."]
     (is (zero? (:exit result)))
+    (is (= 3 (count (outbox-handoffs root))))
     (doseq [role ["specifier" "coder" "refactorer"]]
       (let [copy (outbox-to root role)]
         (is (some? copy) role)
-        (is (str/starts-with? (fs/file-name copy) "00_") role)
         (is (= "true" (header copy "non-forwarding")) role)
         (is (= role (header copy "to")) role)
         (is (str/includes? (handoff-body copy) "merge_and_process.sh architect"))
         (is (str/includes? (handoff-body copy) "inbound tree is the structure"))
+        (is (not (str/includes? (handoff-body copy) "current tree is the structure")))
         (is (not (str/includes? (handoff-body copy) extra)))))
-    (let [forward (first (filter #(str/starts-with? (fs/file-name %) "50_")
-                                 (outbox-handoffs root)))]
-      (is (some? forward))
-      (is (= "specifier" (header forward "to")))
-      (is (= "true" (header forward "non-forwarding")))
-      (is (str/includes? (handoff-body forward) "merge_and_process.sh architect"))
-      (is (str/includes? (handoff-body forward) "inbound tree is the structure"))
-      (is (not (str/includes? (handoff-body forward) "current tree is the structure")))
-      (is (not (str/includes? (handoff-body forward) extra))))))
+    (doseq [role ["coder" "refactorer"]]
+      (is (str/starts-with? (fs/file-name (outbox-to root role)) "00_") role))
+    (let [forwards (filter #(str/starts-with? (fs/file-name %) "50_")
+                           (outbox-handoffs root))]
+      (is (= 1 (count forwards)))
+      (is (= (str (outbox-to root "specifier")) (str (first forwards)))))))
 
 (deftest swarm-handoff-six-pack-architect-back-all-skips-downstream
   ;; Given six-pack architect back-all (not last)
@@ -1502,19 +1502,27 @@
                                  (outbox-handoffs root)))]
       (is (= "true" (header forward "non-forwarding"))))))
 
-(deftest swarm-handoff-two-pack-cleaner-back-one-copies-coder
+(deftest swarm-handoff-two-pack-cleaner-back-one-adds-no-second-copy-for-coder
+  ;; Given a two-pack whose last role carries back-one
+  ;; When the cleaner queues its git_handoff to coder - the only role there is to
+  ;; address, and the same role back-one names
+  ;; Then coder is handed the work once, not twice
   (let [root (tmp-dir)
         _ (init-repo! root)
         _ (setup-project! root [["coder" "task" "forward-only"]
                                 ["cleaner" "task" "back-one"]])
-        _ (commit-work! root)
-        result (queue-git-from! root "cleaner" "coder" "HTW")]
+        sha (commit-work! root)
+        result (queue-git-from! root "cleaner" "coder" "HTW")
+        forward (outbox-to root "coder")]
     (is (zero? (:exit result)))
-    (is (= "true" (header (outbox-to root "coder") "non-forwarding")))
-    (is (str/starts-with? (fs/file-name (outbox-to root "coder")) "00_"))
-    (let [forward (first (filter #(str/starts-with? (fs/file-name %) "50_")
-                                 (outbox-handoffs root)))]
-      (is (= "true" (header forward "non-forwarding"))))))
+    (is (= 1 (count (outbox-handoffs root))))
+    (is (= "coder" (header forward "to")))
+    ;; The surviving copy is the forward one, and it already reads as a handback:
+    ;; the last role has nobody ahead of it, so back-one has nothing left to add.
+    (is (str/starts-with? (fs/file-name forward) "50_"))
+    (is (= "true" (header forward "non-forwarding")))
+    (is (str/includes? (handoff-body forward) (str "merge_and_process.sh cleaner " sha)))
+    (is (str/includes? (handoff-body forward) "inbound tree is the structure"))))
 
 (deftest swarm-handoff-last-window-forward-only-has-no-reverse-copies
   (let [root (tmp-dir)
