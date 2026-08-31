@@ -1023,6 +1023,25 @@
     (is (not (re-find #"--test-state\" \(test-state!" (slurp (script "pack_web.bb")))))
     (is (str/includes? (slurp (str (fs/path repo-root "test/swarmforge/pack_web_test.bb"))) "--test-state"))))
 
+(deftest pack-web-shim-explains-that-test-flags-need-a-checkout
+  ;; get-swarm-forge installs swarmforge/scripts and never test/, so in an
+  ;; installed copy the --test-* branch of the shim points at a harness that is
+  ;; not there. Shape a temp tree the way an install looks - scripts present, no
+  ;; test/ above it - and assert the shim names the flag and the missing path
+  ;; rather than surfacing bb's bare "File does not exist".
+  (let [root (tmp-dir)
+        installed (fs/path root "swarmforge" "scripts" "pack_web.sh")]
+    (try
+      (fs/create-dirs (fs/parent installed))
+      (fs/copy (script "pack_web.sh") installed {:copy-attributes true})
+      (let [result (run {:dir root :ok? false} (str installed) "--test-html")]
+        (is (= 1 (:exit result)))
+        (is (str/includes? (str (:err result)) "--test-html"))
+        (is (str/includes? (str (:err result)) "test/swarmforge/pack_web_test.bb"))
+        (is (not (str/includes? (str (:err result)) "File does not exist"))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest get-swarm-forge-copies-only-swarmforge-owned-paths
   (let [host (tmp-dir)
         base (tmp-dir)
