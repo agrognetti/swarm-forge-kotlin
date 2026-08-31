@@ -461,6 +461,47 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest launch-send-line-stays-under-the-tty-line-limit
+  ;; Given the first role, whose start command also carries the cleanup tail
+  ;; When SwarmForge decides what to type into the pane
+  ;; Then it types a short `source` of a script file, because a tty in canonical
+  ;; mode drops whatever a typed line carries past MAX_CANON (1024 on macOS) and
+  ;; the agent would never start
+  (let [root (tmp-dir)]
+    (try
+      (let [line (str/trim (:out (run {:dir root}
+                                      (script "swarmforge.bb")
+                                      "--test-launch-send-line"
+                                      (str root)
+                                      "claude")))
+            file (fs/path root ".swarmforge/launch/coder.sh")
+            command (slurp (str file))]
+        (is (< (count line) 1024))
+        (is (= (str "source '" file "'") line))
+        (is (not (str/includes? line "claude")))
+        (is (str/includes? command "--permission-mode bypassPermissions"))
+        (is (str/includes? command "exit $exit_code")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest launch-send-line-sources-so-the-command-lands-on-the-pane-shell
+  ;; Given a launch script holding the start command
+  ;; When SwarmForge types the line
+  ;; Then it sources the file rather than running it as a subshell, because the
+  ;; command exports, cd's, and exits the pane's own shell
+  (let [root (tmp-dir)]
+    (try
+      (let [line (str/trim (:out (run {:dir root}
+                                      (script "swarmforge.bb")
+                                      "--test-launch-send-line"
+                                      (str root)
+                                      "codex")))]
+        (is (str/starts-with? line "source "))
+        (is (not (str/starts-with? line "bash ")))
+        (is (not (str/starts-with? line "sh "))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarmforge-trusts-codex-worktree-once
   ;; Given a Codex worktree with no projects block
   ;; When startup ensures trust

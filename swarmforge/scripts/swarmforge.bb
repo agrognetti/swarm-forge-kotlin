@@ -621,15 +621,32 @@
               (str (ensure-newline text)
                    "\n" header "\ntrust_level = \"trusted\"\n"))))))
 
+;; send-keys types into the pane's shell, and a tty in canonical mode silently
+;; discards whatever a line carries past MAX_CANON - 1024 bytes on macOS. The
+;; launch command repeats the working directory around a dozen times, and index 0
+;; carries the cleanup tail on top of that, so a nested enough project overflows:
+;; the tail is dropped mid-quote, zsh sits at `quote>` waiting for the rest of it,
+;; and the agent never starts with nothing on stderr to say why. Keep the long
+;; text in a file and type a line whose length does not grow with the command.
+(defn write-launch-script! [ctx row command]
+  (let [dir (fs/path (:state-dir ctx) "launch")
+        file (fs/path dir (str (:role row) ".sh"))]
+    (fs/create-dirs dir)
+    (spit (str file) (str command "\n"))
+    file))
+
 (defn launch-role! [ctx index row]
   (when (= "codex" (:agent row))
     (ensure-codex-trust! (:worktree-path row)))
   (let [session (:session row)
         display (:display-name row)
-        command (launch-command ctx index row)]
+        ;; source, not a subshell: the command exports, cd's, and index 0 ends in
+        ;; `exit $exit_code`, all of which have to land on the pane's own shell.
+        launch-file (write-launch-script! ctx row (launch-command ctx index row))]
     (sh "tmux" "-S" (:tmux-socket ctx) "send-keys" "-t"
         (tmux-agent-target display (:tmux-pane-base-index ctx) session)
-        command "Enter")
+        (str "source " (sq (str launch-file)))
+        "Enter")
     (println (str "  " cyan "[" display "]" reset " started in session " session))))
 
 (defn stop-handoff-daemon! [ctx]
@@ -951,6 +968,21 @@
     (fs/create-dirs (:prompts-dir ctx))
     (println (launch-command ctx 1 row))))
 
+;; index 0, the one that carries the cleanup tail and so the one that overflowed
+;; the tty line limit when the command itself was typed into the pane.
+(defn test-launch-send-line! [root agent & [extra-args]]
+  (let [ctx (assoc (context root) :terminal-backend "none")
+        row {:role "coder"
+             :agent agent
+             :session "swarmforge-coder"
+             :display-name "Coder"
+             :worktree-name "master"
+             :worktree-path (fs/path root)
+             :receive-mode "task"
+             :extra-args extra-args}]
+    (fs/create-dirs (:prompts-dir ctx))
+    (println (str "source " (sq (str (write-launch-script! ctx row (launch-command ctx 0 row))))))))
+
 (defn test-install-hooks! [root]
   (let [ctx (context root)]
     (install-commit-msg-hook! ctx)
@@ -970,6 +1002,9 @@
     "--test-start-order" (test-start-order! (or (second args) (System/getProperty "user.dir")))
     "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
     "--test-launch-command" (apply test-launch-command!
+                                     (or (second args) (System/getProperty "user.dir"))
+                                     (drop 2 args))
+    "--test-launch-send-line" (apply test-launch-send-line!
                                      (or (second args) (System/getProperty "user.dir"))
                                      (drop 2 args))
     "--test-install-hooks" (test-install-hooks! (second args))
