@@ -585,8 +585,15 @@
 (def ^:private pitest-report
   "A PIT report shaped like the one measured on a real Compose module: one mutant
   in the author's own class, one in the lambda holder the Compose compiler hoists
-  out of a composable, and two in generated Compose Resources code. Blended that
-  is 1 of 4 killed; the author's code is 1 of 1."
+  out of a composable, two in generated Compose Resources code, and two inside a
+  composable the author wrote - one on a call the Compose compiler inserted, one
+  on the author's own `if`. Blended that is 1 of 6 killed; the author's code is 1
+  of 2.
+
+  The last two carry a methodDescription taking a Composer, because that is what
+  the Compose compiler does to a composable's signature and the only place the
+  rewriting is visible. They are the pair that matters: the first must be
+  excluded, and the second must not, or the tool hides a missing test."
   (str "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
        "<mutations partial=\"false\">\n"
        "<mutation detected=\"true\" status=\"KILLED\" numberOfTestsRun=\"2\">\n"
@@ -621,6 +628,24 @@
        "<mutator>org.pitest.mutationtest.engine.gregor.mutators.ReturnValsMutator</mutator>\n"
        "<description>replaced return value with null</description>\n"
        "</mutation>\n"
+       "<mutation detected=\"false\" status=\"NO_COVERAGE\" numberOfTestsRun=\"0\">\n"
+       "<sourceFile>App.kt</sourceFile>\n"
+       "<mutatedClass>com.example.AppKt</mutatedClass>\n"
+       "<mutatedMethod>App</mutatedMethod>\n"
+       "<methodDescription>(Landroidx/compose/runtime/Composer;I)V</methodDescription>\n"
+       "<lineNumber>2</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.VoidMethodCallMutator</mutator>\n"
+       "<description>removed call to androidx/compose/runtime/ComposerKt::traceEventStart</description>\n"
+       "</mutation>\n"
+       "<mutation detected=\"false\" status=\"SURVIVED\" numberOfTestsRun=\"1\">\n"
+       "<sourceFile>App.kt</sourceFile>\n"
+       "<mutatedClass>com.example.AppKt</mutatedClass>\n"
+       "<mutatedMethod>App</mutatedMethod>\n"
+       "<methodDescription>(Landroidx/compose/runtime/Composer;I)V</methodDescription>\n"
+       "<lineNumber>3</lineNumber>\n"
+       "<mutator>org.pitest.mutationtest.engine.gregor.mutators.NegateConditionalsMutator</mutator>\n"
+       "<description>negated conditional</description>\n"
+       "</mutation>\n"
        "</mutations>\n"))
 
 (deftest mutate4kotlin-reports-the-authors-mutants-not-the-generators
@@ -633,24 +658,33 @@
     (fn [root]
       (init-repo! root)
       (write! (fs/path root "shared/src/commonMain/kotlin/com/example/App.kt")
-              "@Composable\nfun App() {}\n")
+              "@Composable\nfun App(on: Boolean) {\n    if (on) Text(\"hi\")\n}\n")
       (fake-gradlew! root "pitest" [pitest-task] true)
       (write! (fs/path root "shared/build/reports/pitest/mutations.xml") pitest-report)
       (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb")]
         (is (zero? exit))
         (testing "the headline counts the author's mutants"
-          (is (str/includes? out "mutants: 1"))
-          (is (str/includes? out "mutation coverage 100.0%")))
+          (is (str/includes? out "mutants: 2"))
+          (is (str/includes? out "mutation coverage 50.0%")))
         (testing "the excluded ones are named by reason, not silently dropped"
-          (is (str/includes? out "3 mutants excluded"))
+          (is (str/includes? out "4 mutants excluded"))
           (is (str/includes? out "Compose compiler lambda holder"))
-          (is (str/includes? out "no source file under any src directory")))
+          (is (str/includes? out "no source file under any src directory"))
+          (is (str/includes? out "call the Compose compiler inserted")))
         (testing "the number that includes them is still printed"
           (is (str/includes? out "every mutant"))
-          (is (str/includes? out "mutation coverage 25.0%  (4 mutants)")))
-        (testing "and no generated mutant is presented as a missing test"
-          (is (str/includes? out "No surviving mutants"))
-          (is (not (str/includes? out "ComposableSingletons"))))))))
+          (is (str/includes? out "mutation coverage 16.7%  (6 mutants)")))
+        (testing "no generated mutant is presented as a missing test"
+          (is (not (str/includes? out "ComposableSingletons")))
+          (is (not (str/includes? out "traceEventStart"))))
+        ;; The half of the policy that is easy to lose. The author's own `if` sits
+        ;; inside a composable, in a method the Compose compiler rewrote, one line
+        ;; away from an excluded mutant - and it is a missing test, so it has to be
+        ;; reported. A filter that took the whole method would read as a cleaner
+        ;; report and would be hiding work.
+        (testing "but the author's own conditional inside a composable is"
+          (is (str/includes? out "1 surviving mutant(s)"))
+          (is (str/includes? out "negated conditional")))))))
 
 (deftest a-task-whose-class-gradle-will-not-print-is-a-tool-defect
   ;; The third state. Accepting would restore the defect; blaming the project

@@ -510,9 +510,60 @@
        :class cls
        :package (slash-package cls)
        :method (text-of m "mutatedMethod")
+       ;; The bytecode signature, which is not the one in the source. A Kotlin
+       ;; compiler plugin that rewrites a function changes its parameters, and
+       ;; that is the only place the change is visible.
+       :signature (text-of m "methodDescription")
        :line (text-of m "lineNumber")
        :mutator (last (str/split (or (text-of m "mutator") "unknown") #"\."))
        :description (text-of m "description")})))
+
+;; ------------------------------------------------- code the compiler inserted
+
+;; A second kind of generated code, and the class-level check cannot see it. The
+;; Compose compiler does not only generate classes beside the author's; it
+;; rewrites the body of the function the author wrote. `fun App()` compiles to
+;; App(Composer, int) - the recomposition scope and the `$changed` bit mask - and
+;; the prologue and epilogue that use them are attributed to the author's own
+;; source lines, in the author's own class. Nothing in bytecode records who wrote
+;; an instruction, so this cannot be answered in general: it takes knowing the
+;; plugin that did the rewriting. Kept narrow for that reason.
+(def ^:private composable-parameter "Landroidx/compose/runtime/Composer;")
+(def ^:private compose-runtime-package "androidx/compose/runtime/")
+
+(defn- removed-call
+  "The method a VoidMethodCallMutator deleted, as PIT spells it, or nil."
+  [description]
+  (second (re-find #"removed call to ([^:\s]+)::" (str description))))
+
+(defn compiler-plumbing
+  "Why a mutant is in code the Compose compiler inserted, or nil when it is the
+  author's.
+
+  One rule, deliberately: a deleted call into the Compose runtime, from a method
+  that takes a Composer. `traceEventStart`, `traceEventEnd`, `sourceInformation`,
+  `skipToGroupEnd` and `updateScope` are recomposition bookkeeping. Nobody writes
+  them, and no test can be asked to kill one.
+
+  The `$changed` mask produces unkillable mutants too - `negated conditional` and
+  `Replaced bitwise AND with OR`, measured on the composable's declaration line -
+  and they are deliberately NOT filtered. An author's own `if` inside a composable
+  reports identically, and no signal measured so far separates the two. A missing
+  test wrongly reported is work for somebody; a missing test wrongly hidden is a
+  lie the report tells. Those go in exclusions.txt, where a person writes the
+  reason and another person can read it."
+  [{:keys [mutator description signature]}]
+  (when (and (str/includes? (str signature) composable-parameter)
+             (= "VoidMethodCallMutator" mutator)
+             (some-> (removed-call description)
+                     (str/starts-with? compose-runtime-package)))
+    :compose-inserted-call))
+
+(def ^:private inserted-code-reasons
+  {:compose-inserted-call "call the Compose compiler inserted"})
+
+(defn- excluded-reason [reason]
+  (or (inserted-code-reasons reason) (s/generated-reasons reason) reason))
 
 ;; PIT counts these statuses as detected. NO_COVERAGE means the mutated line
 ;; never ran at all, which is the most actionable finding of the three.
@@ -736,7 +787,12 @@
                           m (mutations (:xml r))]
                       (assoc m
                              :report (:label r)
-                             :generated (s/generated-class sources m))))
+                             ;; Two questions, asked in this order because the
+                             ;; cheap one settles most of it: is the whole class
+                             ;; generated, and failing that, did a compiler plugin
+                             ;; put this instruction inside a class that is ours.
+                             :generated (or (s/generated-class sources m)
+                                            (compiler-plumbing m)))))
         ;; Generated code is left out of the headline for the same reason coverage
         ;; leaves it out: nobody wrote it, so a surviving mutant in it is not a
         ;; missing test. The Compose compiler alone contributes enough of them to
@@ -758,10 +814,10 @@
                      (:test-strength stats)))
     (when (seq generated)
       (println (format "  %-24s %d mutant%s excluded"
-                       "generated" (count generated)
+                       "not hand-written" (count generated)
                        (if (= 1 (count generated)) "" "s")))
       (doseq [[reason n] (sort-by (comp - val) (frequencies (map :generated generated)))]
-        (println (format "  %-24s   %3d  %s" "" n (s/generated-reasons reason reason))))
+        (println (format "  %-24s   %3d  %s" "" n (excluded-reason reason))))
       ;; Printed because a number that leaves something out has to say so, next to
       ;; the number that does not. Anyone comparing this run to PIT's own HTML
       ;; report needs both.
