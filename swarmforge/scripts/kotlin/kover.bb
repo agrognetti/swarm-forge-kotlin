@@ -13,14 +13,20 @@
 (require '[sfk.support :as s]
          '[clojure.data.xml :as xml])
 
+;; The release this tool was measured against, and the release the snippet below
+;; offers a project that has no Kover at all. One name for both, because they
+;; were two: the snippet said 0.9.8 while the comment beneath it said the task
+;; class had been measured on 0.9.9, and nothing tied the two together.
+(def kover-version "0.9.9")
+
 (def setup-snippet
   (str "plugins {\n"
-       "    id(\"org.jetbrains.kotlinx.kover\") version \"0.9.8\"\n"
+       "    id(\"org.jetbrains.kotlinx.kover\") version \"" kover-version "\"\n"
        "}\n"))
 
 (def candidate-tasks ["koverXmlReport" "koverXmlReportDebug"])
 
-;; Measured on Kover 0.9.9: the task is
+;; Measured on the version above: the task is
 ;; kotlinx.kover.gradle.plugin.tasks.reports.KoverXmlTask. Matching the package
 ;; rather than that class means a rename inside the plugin still passes, while a
 ;; hand-written task wearing the same name does not.

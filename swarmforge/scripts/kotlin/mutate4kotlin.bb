@@ -26,12 +26,16 @@
 ;;
 ;; Every run is a full run, and no history file is written. PIT used to ship a
 ;; file-based history store: measured inside pitest-entry, 1.22.1 carries
-;; DefaultHistoryFactory and ObjectOutputStreamHistory, and 1.25.9 carries
-;; ErroringHistoryFactory and registers no HistoryFactory at all. The store moved
-;; to a commercial plugin, so asking either way in for a history location now ends
-;; the run with "History has been enabled but no history plugin has been
-;; installed". Nothing here reimplements it. A mutation number partly carried over
-;; from an earlier run is not one this constitution would report anyway.
+;; DefaultHistoryFactory and ObjectOutputStreamHistory, while 1.25.9 and 1.30.0
+;; both carry ErroringHistoryFactory and NullHistory, no DefaultHistoryFactory,
+;; and no META-INF/services entry for HistoryFactory at all. The store moved to a
+;; commercial plugin, so asking either way in for a history location now ends the
+;; run with "History has been enabled but no history plugin has been installed".
+;; Nothing here reimplements it. A mutation number partly carried over from an
+;; earlier run is not one this constitution would report anyway.
+;;
+;; The version below is re-measured this way on every bump, because several
+;; sentences this tool prints are only true while it holds.
 
 (require '[babashka.classpath :as cp] '[babashka.fs :as fs])
 (cp/add-classpath (str (fs/parent (fs/absolutize *file*))))
@@ -42,7 +46,7 @@
          '[cheshire.core :as json])
 
 (def pitest-plugin-version "1.19.0")
-(def pitest-core-version "1.25.9")
+(def pitest-core-version "1.30.0")
 ;; Measured, not chosen: asking Gradle to resolve
 ;; org.pitest:pitest-junit5-plugin:1.+ against Maven Central lands here. PIT
 ;; supports JUnit 4 natively and needs this plugin only for JUnit 5.
@@ -427,8 +431,8 @@
                 "--outputFormats" "XML,HTML"
                 "--timestampedReports" "false"
                 "--threads" (str workers)]
-               ;; No --historyInputLocation or --historyOutputLocation. PIT 1.25.9
-               ;; registers no history store, so either one ends the run in
+               ;; No --historyInputLocation or --historyOutputLocation. The pinned
+               ;; PIT registers no history store, so either one ends the run in
                ;; ErroringHistoryFactory before a single mutant is generated. Every
                ;; run is therefore a full run. See the note at the top of this file.
                ;; PIT supports JUnit 4 without help and JUnit 5 through a plugin.

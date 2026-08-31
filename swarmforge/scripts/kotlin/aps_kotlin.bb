@@ -39,7 +39,12 @@
 ;; engine executes the JUnit 4 tests that kotlin.test produces on Android unit
 ;; tests. A project that has moved to Jupiter 6 gets the 6.x launcher instead,
 ;; because a 1.x launcher cannot run a 6.x engine.
-(def launcher-1x "1.12.2")
+;;
+;; Both claims are checked against the jars, not against a release note, because
+;; both are what a bump could quietly take away: 1.14.4 still shades in
+;; VintageTestEngine and JUnit 4's own JUnitCore, and its ConsoleLauncher is
+;; still class file major 52, which is the Java 8 floor.
+(def launcher-1x "1.14.4")
 (def launcher-6x "6.1.3")
 
 (def ^:private path-separator (System/getProperty "path.separator"))

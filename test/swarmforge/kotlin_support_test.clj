@@ -246,8 +246,21 @@
        "  echo '</pmd-cpd>'\n"
        "} > \"$report\"\n"))
 
+(def ^:private pmd-version
+  "Read out of the tool rather than written here, because this file had the
+  version spelled out and the tool was then bumped past it.
+
+  Measured, by desyncing the two on purpose: the stand-in lands in the old
+  directory, dry4kotlin looks in the new one, downloads 50MB of real PMD, and
+  finishes green - `No duplicate blocks found`, exit 0. Only the two assertions
+  naming the fake's canned duplication fail. A suite that checked the exit code
+  and the file counts would have passed, slowly, while testing PMD rather than
+  this tool."
+  (second (re-find #"\(def pmd-version \"([^\"]+)\"\)"
+                   (slurp (str (fs/path kotlin-scripts-dir "dry4kotlin.bb"))))))
+
 (defn- install-fake-pmd! [root]
-  (let [exe (fs/path root ".swarmforge" "tools" "pmd-bin-7.26.0" "bin" "pmd")]
+  (let [exe (fs/path root ".swarmforge" "tools" (str "pmd-bin-" pmd-version) "bin" "pmd")]
     (write! exe fake-pmd)
     (fs/set-posix-file-permissions exe "rwxr-xr-x")))
 

@@ -13,9 +13,17 @@
 ;;
 ;; CPD is a token-level detector, so it sees through reformatting, comments and
 ;; whitespace. It does NOT see through renaming: PMD's --ignore-identifiers is
-;; implemented for Java but not for the Kotlin or Swift lexers, verified against
-;; PMD 7.26.0. Copy-paste is found; copy-paste-then-rename is not. The threshold
-;; below is lower than PMD's own default of 100 to partly compensate.
+;; implemented for Java but not for the Kotlin or Swift lexers. Copy-paste is
+;; found; copy-paste-then-rename is not. The threshold below is lower than PMD's
+;; own default of 100 to partly compensate.
+;;
+;; Measured on 7.26.0 and again on 7.27.0, with a positive control each time:
+;; two files with identical bodies are reported, and two files differing only in
+;; their identifier names are not - with the flag and without it, in Kotlin and
+;; in Swift. Re-measure it the same way on the next bump, control included. A
+;; detector that finds nothing and a detector that is not running produce the
+;; same report, so "found no duplication" is only evidence once something known
+;; to be duplicated has come back found.
 
 (require '[babashka.classpath :as cp] '[babashka.fs :as fs])
 (cp/add-classpath (str (fs/parent (fs/absolutize *file*))))
@@ -24,7 +32,7 @@
          '[clojure.string :as str]
          '[clojure.data.xml :as xml])
 
-(def pmd-version "7.26.0")
+(def pmd-version "7.27.0")
 
 (def pmd-url
   (str "https://github.com/pmd/pmd/releases/download/pmd_releases/"
@@ -65,9 +73,19 @@
         ;; sidesteps --dir splitting its own value on commas.
         list-file (fs/path (s/state-dir "dry") (str "files-" language ".txt"))
         _ (spit (str list-file) (str (str/join "\n" files) "\n"))
-        ;; --report-file, not stream scraping: CPD renders its report to stderr
-        ;; when no report file is given, so a tool that reads stdout finds
-        ;; nothing and reports zero duplication. Verified against PMD 7.26.0.
+        ;; --report-file, not stream scraping. Not because the streams are
+        ;; unusable: measured on both 7.26.0 and 7.27.0, CPD writes the report to
+        ;; stdout as clean XML and puts its errors on stderr, so scraping would
+        ;; in fact work today. It is a file because the report is an artifact
+        ;; this tool prints a path to and a later role can re-read, and because
+        ;; a parse that depends on nothing else ever appearing on stdout is one
+        ;; PMD can break in a point release without failing - it would just
+        ;; report zero duplication.
+        ;;
+        ;; This comment used to say CPD writes its report to stderr. It does not,
+        ;; in either version, and it did not when that was written. The decision
+        ;; was right and the reason was false, which is the harder kind to catch:
+        ;; nothing misbehaves, so the sentence is simply believed.
         ;;
         ;; --ignore-identifiers and --ignore-literals are deliberately not
         ;; passed: they are no-ops for the Kotlin and Swift lexers, and a flag
