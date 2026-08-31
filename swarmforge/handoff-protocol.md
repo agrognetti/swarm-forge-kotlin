@@ -46,13 +46,16 @@ the audit trail and restart state.
 `swarmforge.conf` window lines may include an optional receive mode:
 
 ```text
-window <role> <agent> <worktree> [task|batch] [extra-cli-args...]
+window <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
 ```
 
-When omitted, receive mode defaults to `task`. Any fields after the receive
-mode are passed to the agent CLI as additional arguments. The launcher writes the
-normalized mode into `.swarmforge/roles.tsv`, and agent-facing receive helpers
-read that runtime file rather than reparsing `swarmforge.conf`.
+When omitted, receive mode defaults to `task`. An optional propagation token
+after receive-mode defaults to `forward-only`. `back-one` and `back-all` queue
+merge-only copies to earlier windows; they do not move the card. Any fields after
+those tokens are passed to the agent CLI as additional arguments. The launcher
+writes the normalized mode and propagation into `.swarmforge/roles.tsv`, and
+agent-facing receive helpers read that runtime file rather than reparsing
+`swarmforge.conf`.
 
 Use `batch` for roles that should consume equal-priority queued handoffs as a
 single unit, such as six-pack `cleaner`, `architect`, `hardender`, and `QA`,

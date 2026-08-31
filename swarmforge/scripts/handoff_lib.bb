@@ -73,6 +73,10 @@
   (let [mode (nth (role-row role-name) 6 "")]
     (if (str/blank? mode) "task" mode)))
 
+(defn role-propagation [role-name]
+  (let [mode (nth (role-row role-name) 7 "")]
+    (if (str/blank? mode) "forward-only" mode)))
+
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
            (java.time.Instant/now)))
@@ -216,6 +220,7 @@
       "role-known" (System/exit (if (role-known? (second args)) 0 1))
       "role-worktree-name" (println (role-worktree-name (second args)))
       "role-receive-mode" (println (role-receive-mode (second args)))
+      "role-propagation" (println (role-propagation (second args)))
       "timestamp" (println (timestamp))
       "id-timestamp" (println (id-timestamp))
       "valid-priority" (System/exit (if (valid-priority? (second args)) 0 1))

@@ -157,26 +157,19 @@
 (defn from-master? [roles headers]
   (= (get headers "from") (master-role-name roles)))
 
-(defn other-roles [roles from]
-  (->> (keys roles)
-       (remove #(= % from))
-       set))
-
-(defn terminal-broadcast? [roles headers]
-  (let [from (get headers "from")
-        rec (set (recipient-list headers))
-        others (other-roles roles from)]
-    (boolean
-     (and (not (from-master? roles headers))
-          (seq rec)
-          (= rec others)))))
-
 (defn non-forwarding? [headers]
   (= "true" (get headers "non-forwarding")))
 
-(defn terminal-handoff? [roles headers]
-  (or (non-forwarding? headers)
-      (terminal-broadcast? roles headers)))
+(defn pack-role-names []
+  (->> (read-lines roles-file)
+       (remove str/blank?)
+       (mapv #(first (str/split % #"\t")))))
+
+(defn last-pack-role? [role]
+  (= role (last (pack-role-names))))
+
+(defn terminal-handoff? [_roles headers]
+  (last-pack-role? (get headers "from")))
 
 (defn listed-handoffs [dir]
   (if (fs/directory? dir)
@@ -256,11 +249,17 @@
   (when (and (fs/exists? (board-file))
              (= "git_handoff" (get headers "type"))
              (seq (recipient-list headers)))
-    (if (terminal-handoff? roles headers)
+    (cond
+      (terminal-handoff? roles headers)
       (doseq [key (terminal-task-keys roles headers)
               :let [name (or (board-name-for-key key) (get headers "task"))]]
         (when-not (str/blank? name)
           (pack-board! "done" "--name" name)))
+
+      (non-forwarding? headers)
+      nil
+
+      :else
       (let [key (task-key headers)
             task (or (board-name-for-key key) (get headers "task"))]
         (when-not (str/blank? task)

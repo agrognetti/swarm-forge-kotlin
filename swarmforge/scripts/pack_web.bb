@@ -201,7 +201,6 @@
 (defn other-status? [sentence]
   (let [n (str/lower-case (fold-apostrophe sentence))]
     (boolean (or (re-find #"\blet me\b" n)
-                 (re-find #"\brun\b" n)
                  (re-find #"hand off" n)
                  (re-find #"handing off" n)
                  (re-find #"handoff" n)
@@ -222,9 +221,15 @@
                  (re-find #"if idle, run ready_for_next" n)
                  (re-find #"rejected:" n)))))
 
+(defn pane-chrome? [sentence]
+  (let [n (str/lower-case (fold-apostrophe sentence))]
+    (boolean (or (re-find #"to view transcript" n)
+                 (re-find #"running the handoff command again" n)))))
+
 (defn status-sentence? [sentence]
   (and (not (mail-banner? sentence))
        (not (tool-trace? sentence))
+       (not (pane-chrome? sentence))
        (or (i-status? sentence) (other-status? sentence))))
 
 (defn im-status [role text backend]
@@ -1659,8 +1664,8 @@
                                  :port (parse-port port-str)
                                  :legacy-return-value? false})
         url (str "http://127.0.0.1:" (http/server-port server))]
-    (write-dashboard-url! root url)
     (write-pack-web-pid! root)
+    (write-dashboard-url! root url)
     (println url)
     (flush)
     @(promise)))

@@ -166,7 +166,7 @@ test.describe("pack dashboard", () => {
     await expect(page.locator("#reject-layer")).toHaveClass(/open/);
     await expect(page.locator("#rt-title")).toHaveText("HTW");
     await expect(page.locator("#rt-retry")).toHaveText("Retry");
-    await expect(page.locator("#rt-accept")).toHaveText("Accept");
+    await expect(page.locator("#rt-accept")).toHaveText("Accept Unchanged");
     await expect(page.locator("#rt-delete")).toHaveText("Delete");
   });
 });

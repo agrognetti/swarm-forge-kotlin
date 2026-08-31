@@ -444,15 +444,17 @@ The durable handoff files and lifecycle headers replace the old logbook and rese
 `swarmforge/swarmforge.conf` defines the swarm window-by-window. Each line has this form:
 
 ```conf
-window-invisible <role> <agent> <worktree> [task|batch] [extra-cli-args...]
-window <role> <agent> <worktree> [task|batch] [extra-cli-args...]
+window-invisible <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
+window <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [extra-cli-args...]
 ```
 
 `window-invisible` starts the agent in tmux without a Terminal window (the pack default). `window` also opens a Terminal surface for that role.
 
 The optional receive mode defaults to `task`. Use `batch` for roles that should consume all currently queued equal-priority handoffs as one batch.
 
-Any fields after the receive mode are passed directly to the agent CLI as additional arguments. If you omit the receive mode, extra arguments may start at the fifth field:
+The optional propagation token defaults to `forward-only`. `back-one` queues a merge-only copy to the previous window; `back-all` queues merge-only copies to every earlier window. Those copies do not move the card. The card goes Done only when the last window queues a `git_handoff`.
+
+Any fields after receive-mode and the propagation token are passed directly to the agent CLI as additional arguments. If you omit those tokens, extra arguments may start at the fifth field:
 
 ```conf
 window coder copilot wt-coder --yolo

@@ -12,7 +12,7 @@ usage() {
   echo "usage: get-swarm-forge <branch> [agent] [extra-cli-args...]" >&2
   echo "  branch: two-pack, four-pack, six-pack, or another runnable pack branch" >&2
   echo "  agent: ${valid_agents[*]}" >&2
-  echo "  extra-cli-args: appended to each window line after the optional task|batch field" >&2
+  echo "  extra-cli-args: appended to each window line after the optional task|batch and forward-only|back-one|back-all fields" >&2
 }
 
 if [[ -z "${1:-}" ]]; then

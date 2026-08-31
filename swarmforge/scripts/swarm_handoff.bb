@@ -242,6 +242,16 @@
 (defn last-pack-role? [role]
   (= role (last (pack-role-names))))
 
+(defn reverse-roles [sender]
+  (let [roles (pack-role-names)
+        idx (.indexOf roles sender)]
+    (if (neg? idx)
+      []
+      (case (handoff-lib/role-propagation sender)
+        "back-one" (if (pos? idx) [(nth roles (dec idx))] [])
+        "back-all" (vec (take idx roles))
+        []))))
+
 (defn with-non-forwarding [headers sender]
   (if (and (= "git_handoff" (get headers "type"))
            (last-pack-role? sender))
@@ -762,25 +772,31 @@
       (finally
         (fs/delete lock-dir)))))
 
-(defn body [type sender canonical-commit note-message]
+(defn body [type sender canonical-commit note-message reverse?]
   (case type
-    "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process.sh " sender " " canonical-commit)
+    "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process.sh " sender " " canonical-commit
+                       (when reverse?
+                         "\n\nThe inbound tree is the structure. Replay this role's current task onto that shape."))
     "note" (str "Re-read your role and constitution.\n\n" note-message)))
 
-(defn write-handoff! [{:keys [headers recipients canonical-commit artifacts sender]}]
+(defn write-handoff! [{:keys [headers recipients canonical-commit artifacts sender
+                              priority non-forwarding reverse?]}]
   (let [timestamp-id (id-timestamp)
         created-at (timestamp)
         sequence (next-sequence)
         id (str timestamp-id "_" sequence "_from_" sender)
         recipient-slug (str/join "_" recipients)
-        priority (get headers "priority")
+        priority (or priority (get headers "priority"))
         type (get headers "type")
+        non-forwarding? (if (some? non-forwarding)
+                          non-forwarding
+                          (= "true" (get headers "non-forwarding")))
         filename (str priority "_" timestamp-id "_" sequence "_from_" sender "_to_" recipient-slug ".handoff")
         outbox-dir (fs/path (state-dir) "outbox")
         tmp-dir (fs/path outbox-dir "tmp")
         tmp-file (fs/path tmp-dir (str filename ".tmp"))
         outbox-file (fs/path outbox-dir filename)
-        handoff-body (body type sender canonical-commit (get headers "message"))
+        handoff-body (body type sender canonical-commit (get headers "message") reverse?)
         lines (cond-> [(str "id: " id)
                        (str "from: " sender)
                        (str "to: " (str/join "," recipients))
@@ -794,7 +810,7 @@
                       (str "artifacts: " artifacts))
                 (and (= "git_handoff" type) (not (str/blank? (current-task-base))))
                 (conj (str "task_base_commit: " (current-task-base)))
-                (= "true" (get headers "non-forwarding"))
+                non-forwarding?
                 (conj "non-forwarding: true")
                 (= "note" type)
                 (conj (str "message: " (get headers "message")))
@@ -807,6 +823,18 @@
     (spit (str tmp-file) (str (str/join "\n" lines) "\n"))
     (fs/move tmp-file outbox-file)
     outbox-file))
+
+(defn write-handoffs! [ctx]
+  (let [forward (write-handoff! (assoc ctx :reverse? false))
+        reverse (when (= "git_handoff" (get-in ctx [:headers "type"]))
+                  (mapv (fn [role]
+                          (write-handoff! (assoc ctx
+                                                 :recipients [role]
+                                                 :priority "00"
+                                                 :non-forwarding true
+                                                 :reverse? true)))
+                        (reverse-roles (:sender ctx))))]
+    (into [forward] reverse)))
 
 (defn error-report [draft errors]
   (binding [*out* *err*]
@@ -867,22 +895,23 @@
                         (commit-artifacts sha))]
             (when (and (= "git_handoff" (get headers "type")) (empty? files))
               (exit! 1 (str "Result commit " sha " has no changed files")))
-            (let [submit! #(write-handoff! {:headers headers
-                                            :recipients (:recipients validation)
-                                            :canonical-commit (:canonical-commit validation)
-                                            :artifacts (when files (str/join "," files))
-                                            :sender sender})
-                  outbox-file (if (= "git_handoff" (get headers "type"))
-                                (submit-after-audit!
-                                 (audit-candidate draft sender headers
-                                                  (:recipients validation)
-                                                  (:canonical-commit validation)
-                                                  files)
-                                 submit!)
-                                (submit!))]
-              (when outbox-file
+            (let [submit! #(write-handoffs! {:headers headers
+                                             :recipients (:recipients validation)
+                                             :canonical-commit (:canonical-commit validation)
+                                             :artifacts (when files (str/join "," files))
+                                             :sender sender})
+                  outbox-files (if (= "git_handoff" (get headers "type"))
+                                 (submit-after-audit!
+                                  (audit-candidate draft sender headers
+                                                   (:recipients validation)
+                                                   (:canonical-commit validation)
+                                                   files)
+                                  submit!)
+                                 (submit!))]
+              (when outbox-files
                 (fs/delete draft)
-                (println "HANDOFF QUEUED:" (str outbox-file))
+                (doseq [outbox-file outbox-files]
+                  (println "HANDOFF QUEUED:" (str outbox-file)))
                 (complete-current-after-git-handoff! headers)))))))))
 
 (apply -main *command-line-args*)

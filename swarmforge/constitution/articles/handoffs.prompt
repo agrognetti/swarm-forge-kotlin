@@ -53,6 +53,10 @@ message: <one line, max 80 chars>
 - `ready_for_next.sh` dispatches to the task or batch helper configured for
   your role. For `git_handoff` it merges the inbound commit
   (`merge_and_process.sh <sender> <commit>`).
+- On a reverse (`non-forwarding`) `git_handoff`, the inbound tree is the
+  structure. Replay this role's current task onto that shape. Do not keep the
+  pre-inbound layout in order to save local work. This rule does not apply to
+  the forward `to:` hop.
 - If merge_and_process.sh or ready_for_next reports a merge conflict, resolve
   every conflicted file, `git add` them, and commit. You own conflict
   resolution. Do not invent a new `git merge`. Parallel cards on one tree

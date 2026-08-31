@@ -287,8 +287,59 @@
       (write-file (fs/path root "swarmforge/roles/cleaner.prompt") "cleaner\n")
       (let [result (run {:dir root} (script "swarmforge.bb") "--test-parse" (str root))]
         (is (str/includes? (:out result) "coder Coder"))
-        (is (str/includes? (:out result) "task --yolo"))
-        (is (str/includes? (:out result) "batch --allow-all-tools")))
+        (is (str/includes? (:out result) "task forward-only --yolo"))
+        (is (str/includes? (:out result) "batch forward-only --allow-all-tools")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarmforge-parses-propagation-tokens
+  ;; Given omitted, back-one, and back-all after receive-mode, plus extra CLI args
+  ;; When --test-parse
+  ;; Then omitted is forward-only, tokens round-trip in roles.tsv, extra args still apply
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/constitution.prompt")
+                  "Read articles.\n")
+      (write-file (fs/path root "swarmforge/swarmforge.conf")
+                  (str "window specifier grok master\n"
+                       "window coder grok coder task --yolo\n"
+                       "window refactorer grok refactorer task back-one\n"
+                       "window architect grok architect batch back-all --allow-all-tools\n"))
+      (write-file (fs/path root "swarmforge/roles/specifier.prompt") "specifier\n")
+      (write-file (fs/path root "swarmforge/roles/coder.prompt") "coder\n")
+      (write-file (fs/path root "swarmforge/roles/refactorer.prompt") "refactorer\n")
+      (write-file (fs/path root "swarmforge/roles/architect.prompt") "architect\n")
+      (let [result (run {:dir root} (script "swarmforge.bb") "--test-parse" (str root))
+            out (:out result)]
+        (is (zero? (:exit result)))
+        (is (str/includes? out "specifier Specifier"))
+        (is (str/includes? out "task forward-only"))
+        (is (str/includes? out "task forward-only --yolo"))
+        (is (str/includes? out "task back-one"))
+        (is (str/includes? out "batch back-all --allow-all-tools"))
+        (let [roles (slurp (str (fs/path root ".swarmforge/roles.tsv")))
+              lines (str/split-lines roles)]
+          (is (str/ends-with? (first lines) "\ttask\tforward-only"))
+          (is (str/includes? (nth lines 1) "\ttask\tforward-only"))
+          (is (str/ends-with? (nth lines 2) "\ttask\tback-one"))
+          (is (str/ends-with? (nth lines 3) "\tbatch\tback-all"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest handoff-lib-reads-role-propagation
+  (let [root (tmp-dir)]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (str "coder\tmaster\t" root "\tsession\tCoder\tcodex\ttask\n"
+                       "cleaner\tcleaner\t" root "\tsession\tCleaner\tcodex\tbatch\tback-one\n"
+                       "architect\tarchitect\t" root "\tsession\tArchitect\tcodex\tbatch\tback-all\n"))
+      (let [coder (run {:dir root} (script "handoff_lib.bb") "role-propagation" "coder")
+            cleaner (run {:dir root} (script "handoff_lib.bb") "role-propagation" "cleaner")
+            architect (run {:dir root} (script "handoff_lib.bb") "role-propagation" "architect")]
+        (is (str/includes? (:out coder) "forward-only"))
+        (is (str/includes? (:out cleaner) "back-one"))
+        (is (str/includes? (:out architect) "back-all")))
       (finally
         (fs/delete-tree root)))))
 

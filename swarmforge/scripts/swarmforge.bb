@@ -142,10 +142,19 @@
     "window-invisible" false
     (config-fail! (str "Unknown config directive on line " line-no ": " directive))))
 
+(def receive-modes #{"task" "batch"})
+(def propagation-modes #{"forward-only" "back-one" "back-all"})
+
 (defn receive-fields [trailing]
-  (if (#{"task" "batch"} (first trailing))
-    [(first trailing) (rest trailing)]
-    ["task" trailing]))
+  (let [[receive-mode after-receive]
+        (if (receive-modes (first trailing))
+          [(first trailing) (rest trailing)]
+          ["task" trailing])
+        [propagation extra]
+        (if (propagation-modes (first after-receive))
+          [(first after-receive) (rest after-receive)]
+          ["forward-only" after-receive])]
+    [receive-mode propagation extra]))
 
 (defn extra-args-str [tokens]
   (when (seq tokens)
@@ -170,7 +179,7 @@
   (reject-if (not (fs/exists? (fs/path (:roles-dir ctx) (str role ".prompt"))))
              (str "Missing role prompt " (fs/path (:roles-dir ctx) (str role ".prompt")))))
 
-(defn window-row [ctx role agent worktree receive-mode extra-args visible?]
+(defn window-row [ctx role agent worktree receive-mode propagation extra-args visible?]
   {:role role
    :agent agent
    :session (session-name-for-role role)
@@ -180,6 +189,7 @@
                     (:working-dir ctx)
                     (worktree-path-for-name (:worktrees-dir ctx) worktree))
    :receive-mode receive-mode
+   :propagation propagation
    :extra-args extra-args
    :visible? visible?})
 
@@ -189,10 +199,10 @@
                (str "Invalid config line " line-no ": " line))
     (let [[directive role agent worktree & trailing] fields
           agent (str/lower-case agent)
-          [receive-mode extra-tokens] (receive-fields trailing)
+          [receive-mode propagation extra-tokens] (receive-fields trailing)
           visible? (visible-window? directive line-no)]
       (validate-window! ctx line-no role agent worktree receive-mode roles worktrees)
-      (window-row ctx role agent worktree receive-mode (extra-args-str extra-tokens) visible?))))
+      (window-row ctx role agent worktree receive-mode propagation (extra-args-str extra-tokens) visible?))))
 
 (defn require-master-worktree! [rows]
   (let [masters (filterv #(= "master" (:worktree-name %)) rows)]
@@ -238,14 +248,15 @@
   (spit (str (:roles-file ctx))
         (apply str
                (for [row (:roles ctx)]
-                 (format "%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
+                 (format "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
                          (:role row)
                          (:worktree-name row)
                          (:worktree-path row)
                          (:session row)
                          (:display-name row)
                          (:agent row)
-                         (:receive-mode row))))))
+                         (:receive-mode row)
+                         (:propagation row))))))
 
 (def required-helpers
   ["handoff_lib.bb" "swarm_handoff.sh" "swarm_handoff.bb"
@@ -508,7 +519,7 @@
          "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
          "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
          (when last-role?
-           (str "- You are the last role in this pack. After this pack step, one git_handoff to every other role. Recipients merge only. The card goes to Done. Do not also send a git_handoff to a single next role.\n"))
+           (str "- You are the last role in this pack. After this pack step, queue a git_handoff. The helper marks the card Done. Do not list every other role on to: to finish the card.\n"))
          (when (= role "specifier")
            (str "- Specify from the board card and the current product tree. Do not import behavior from sibling projects.\n"
                 "- Do not ask the operator what new feature to specify or what the card already states.\n"
@@ -844,7 +855,7 @@
     (prepare-workspace! ctx)
     (doseq [row (:roles ctx)]
       (println (str (:role row) " " (:display-name row) " " (:worktree-path row) " "
-                    (:receive-mode row)
+                    (:receive-mode row) " " (:propagation row)
                     (when-let [extra (:extra-args row)] (str " " extra))
                     " " (visibility-label row))))
     (print (slurp (str (:roles-file ctx))))

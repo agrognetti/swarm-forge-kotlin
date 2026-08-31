@@ -50,18 +50,20 @@
 
 (defn setup-pack!
   ([root] (setup-pack! root ["specifier"]))
-  ([root roles]
+  ([root roles] (setup-pack! root roles {}))
+  ([root roles propagation]
    (write-file
     (fs/path root ".swarmforge/roles.tsv")
     (apply str
            (map-indexed
             (fn [i role]
-              (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
+              (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\t%s\n"
                       role
                       (if (zero? i) "master" role)
                       (pack-worktree root roles role)
                       role
-                      (str/capitalize role)))
+                      (str/capitalize role)
+                      (get propagation role "forward-only")))
             roles)))
    (doseq [role roles
            dir [".swarmforge/handoffs/outbox"
@@ -119,19 +121,20 @@
 (defn increment-audit! [root task-id]
   (pack-board root true "increment-audit" "--root" (str root) "--task-id" task-id))
 
-(defn queue-handoff! [root {:keys [from to task artifacts non-forwarding]}]
-  (write-file
-   (fs/path root ".swarmforge/handoffs/outbox"
-            (str "50_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
-   (str "from: " from "\n"
-        "to: " to "\n"
-        "priority: 50\n"
-        "type: git_handoff\n"
-        "task: " task "\n"
-        (when artifacts (str "artifacts: " artifacts "\n"))
-        (when non-forwarding "non-forwarding: true\n")
-        "\n"
-        "payload\n")))
+(defn queue-handoff! [root {:keys [from to task artifacts non-forwarding priority body]}]
+  (let [priority (or priority "50")]
+    (write-file
+     (fs/path root ".swarmforge/handoffs/outbox"
+              (str priority "_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
+     (str "from: " from "\n"
+          "to: " to "\n"
+          "priority: " priority "\n"
+          "type: git_handoff\n"
+          "task: " task "\n"
+          (when artifacts (str "artifacts: " artifacts "\n"))
+          (when non-forwarding "non-forwarding: true\n")
+          "\n"
+          (or body "payload") "\n"))))
 
 (defn handoff-names [dir]
   (if (fs/directory? dir)
@@ -329,6 +332,131 @@
       (finally
         (stop-tmux! sock)))))
 
+(def four-pack-roles ["specifier" "coder" "refactorer" "architect"])
+(def reverse-structure-body
+  (str "Re-read your role and constitution.\n\n"
+       "merge_and_process.sh refactorer abcdef1234\n\n"
+       "The inbound tree is the structure. Replay this role's current task onto that shape."))
+
+(deftest handoffd-refactorer-back-one-does-not-done-or-hold
+  ;; Given four-pack, card in refactorer, reverse copy to coder and forward to architect
+  ;; When handoffd delivers
+  ;; Then coder gets the 00 reverse file, lane is architect, Attention is empty, card is not Done
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        sock (do (setup-pack! root roles {"refactorer" "back-one" "architect" "back-all"})
+                 (create-task root "HTW" "refactorer")
+                 (write-file
+                  (fs/path (pack-worktree root roles "coder")
+                           ".swarmforge/handoffs/inbox/new/50_next_card.handoff")
+                  (str "from: specifier\nto: coder\npriority: 50\ntype: note\n"
+                       "message: next card\n\nnote\n"))
+                 (queue-handoff! root {:from "refactorer" :to "architect" :task "HTW"
+                                       :priority "50"})
+                 (queue-handoff! root {:from "refactorer" :to "coder" :task "HTW"
+                                       :priority "00" :non-forwarding true
+                                       :body reverse-structure-body})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (let [coder-mail (sort (inbox-names root roles "coder"))
+            delivered (slurp (str (fs/path (pack-worktree root roles "coder")
+                                           ".swarmforge/handoffs/inbox/new"
+                                           (first coder-mail))))]
+        (is (str/starts-with? (first coder-mail) "00_"))
+        (is (str/starts-with? (second coder-mail) "50_"))
+        (is (str/includes? delivered "merge_and_process.sh refactorer"))
+        (is (str/includes? delivered "inbound tree is the structure"))
+        (is (str/includes? delivered "non-forwarding: true")))
+      (is (seq (inbox-names root roles "architect")))
+      (is (= [] (pending-names root)))
+      (is (= "architect" (task-lane root "HTW")))
+      (is (not= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-four-pack-architect-back-all-dones-because-last
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        sock (do (setup-pack! root roles {"refactorer" "back-one" "architect" "back-all"})
+                 (create-task root "HTW" "architect")
+                 (queue-handoff! root {:from "architect" :to "specifier" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (doseq [role ["specifier" "coder" "refactorer"]]
+                   (queue-handoff! root {:from "architect" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true
+                                         :body reverse-structure-body}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "refactorer"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-six-pack-architect-back-all-moves-to-hardender
+  (let [root (tmp-dir)
+        roles six-pack-roles
+        sock (do (setup-pack! root roles {"cleaner" "back-one"
+                                          "architect" "back-all"
+                                          "QA" "back-all"})
+                 (create-task root "HTW" "architect")
+                 (queue-handoff! root {:from "architect" :to "hardender" :task "HTW"
+                                       :priority "50"})
+                 (doseq [role ["specifier" "coder" "cleaner"]]
+                   (queue-handoff! root {:from "architect" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "cleaner"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (seq (inbox-names root roles "hardender")))
+      (is (= [] (inbox-names root roles "QA")))
+      (is (= "hardender" (task-lane root "HTW")))
+      (is (not= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-six-pack-qa-back-all-dones-because-last
+  (let [root (tmp-dir)
+        roles six-pack-roles
+        sock (do (setup-pack! root roles {"cleaner" "back-one"
+                                          "architect" "back-all"
+                                          "QA" "back-all"})
+                 (create-task root "HTW" "QA")
+                 (queue-handoff! root {:from "QA" :to "specifier" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (doseq [role ["specifier" "coder" "cleaner" "architect" "hardender"]]
+                   (queue-handoff! root {:from "QA" :to role :task "HTW"
+                                         :priority "00" :non-forwarding true}))
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (doseq [role ["specifier" "coder" "cleaner" "architect" "hardender"]]
+        (is (seq (inbox-names root roles role)) role))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-two-pack-cleaner-back-one-dones-because-last
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles {"cleaner" "back-one"})
+                 (create-task root "HTW" "cleaner")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"
+                                       :priority "50" :non-forwarding true})
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"
+                                       :priority "00" :non-forwarding true})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (seq (inbox-names root roles "coder")))
+      (is (= "done" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
 (deftest pack-web-exposes-dashboard-state-from-conf-and-board
   ;; Given a six-pack with specifier as master and a board card
   ;; When pack_web --test-state
@@ -481,10 +609,10 @@
       (finally
         (stop-tmux! sock)))))
 
-(deftest four-pack-partial-to-is-not-done
+(deftest four-pack-last-role-git-handoff-is-done
   ;; Given four-pack, card in architect
   ;; When architect queues git_handoff to specifier,coder (not every other role)
-  ;; Then the card is not done
+  ;; Then the card is done because architect is last
   (let [root (tmp-dir)
         roles ["specifier" "coder" "refactorer" "architect"]
         sock (do (setup-pack! root roles)
@@ -495,7 +623,7 @@
                  (start-tmux! root roles))]
     (try
       (handoffd-once root)
-      (is (not= "done" (task-lane root "htw-console-app")))
+      (is (= "done" (task-lane root "htw-console-app")))
       (finally
         (stop-tmux! sock)))))
 
@@ -1025,6 +1153,9 @@
         proc (.start pb)]
     (try
       (is (wait-file url-file 5000) "dashboard-url was written")
+      (let [pid-file (fs/path root ".swarmforge/pack_web.pid")]
+        (is (wait-file pid-file 5000) "pack_web.pid was written")
+        (is (= (str (.pid proc)) (str/trim (slurp (str pid-file))))))
       (when (fs/exists? url-file)
         (let [url (str/trim (slurp (str url-file)))
               html (slurp url)]
@@ -1075,18 +1206,25 @@
         _ (setup-pack! root ["coder" "cleaner"])
         sock (start-tmux! root ["coder" "cleaner"])
         daemon (.start (java.lang.ProcessBuilder. ["sleep" "120"]))
-        pid (str (.pid daemon))]
+        pid (str (.pid daemon))
+        pack-web-proc (.start (java.lang.ProcessBuilder. ["sleep" "120"]))
+        pack-web-pid (str (.pid pack-web-proc))]
     (try
       (write-file (fs/path root ".swarmforge/daemon/handoffd.pid") (str pid "\n"))
+      (write-file (fs/path root ".swarmforge/pack_web.pid") (str pack-web-pid "\n"))
       (let [result (pack-web root false "--test-teardown" (str root) "TEARDOWN")]
         (is (zero? (:exit result)))
         (is (str/includes? (:out result) "teardown_started"))
         (is (not= 0 (:exit (run {:dir root :ok? false} "tmux" "-S" sock "list-sessions"))))
         (is (false? (.isAlive daemon)))
-        (is (not (fs/exists? (fs/path root ".swarmforge/daemon/handoffd.pid")))))
+        (is (false? (.isAlive pack-web-proc)))
+        (is (not (fs/exists? (fs/path root ".swarmforge/daemon/handoffd.pid"))))
+        (is (not (fs/exists? (fs/path root ".swarmforge/pack_web.pid")))))
       (finally
         (when (.isAlive daemon)
           (.destroyForcibly daemon))
+        (when (.isAlive pack-web-proc)
+          (.destroyForcibly pack-web-proc))
         (stop-tmux! sock)))))
 
 (deftest pack-board-move-matches-task-name-ignoring-case
@@ -1312,6 +1450,24 @@
           card (first (:tasks (json/parse-string (:out result) true)))]
       (is (zero? (:exit result)))
       (is (str/includes? (str (:status card)) "I'll continue with the cave map for HTW.")))))
+
+(deftest pack-web-card-status-ignores-transcript-and-helper-chrome
+  ;; Given an I'll sentence then a collapsed transcript line and helper audit copy
+  ;; When --test-status-pane
+  ;; Then status is the I'll sentence, not the chrome
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll write the cave stories.\n"
+                                  "… +15 lines (ctrl + t to view transcript)\n"
+                                  "Fix every finding, commit the corrections, rerun applicable checks, and repeat "
+                                  "this audit against the revised candidate before running the handoff command again.\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll write the cave stories"))
+    (is (not (str/includes? (str (:status card)) "view transcript")))
+    (is (not (str/includes? (str (:status card)) "running the handoff command again")))))
 
 (deftest pack-web-card-status-ignores-handoff-mail-banner
   ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner
