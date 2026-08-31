@@ -8,6 +8,7 @@
   did it without raising an error at all."
   (:require [babashka.classpath :as cp]
             [babashka.fs :as fs]
+            [clj-yaml.core :as yaml]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]))
@@ -984,6 +985,266 @@
         (is (not (zero? exit)))
         (is (str/includes? err "is not the org.jetbrains.kotlinx.kover task"))
         (is (str/includes? err "expected: a class under kotlinx.kover."))))))
+
+;; ------------------------------------------------------ detekt's KMP baseline
+
+(def ^:private measured-detekt-version
+  "The release the two corrections below were measured against, by reading the
+  config detekt itself ships:
+
+      unzip -p detekt-cli-<version>-all.jar default-detekt-config.yml
+
+  Compared against the version `detekt.bb` pins, so a bump cannot quietly
+  inherit a measurement taken on a different release."
+  "1.23.8")
+
+(def ^:private detekt-version
+  "Read out of the tool rather than repeated here, so these tests point at the
+  jar path the tool will look for."
+  (second (re-find #"\(def detekt-version \"([^\"]+)\"\)"
+                   (slurp (str (fs/path kotlin-scripts-dir "detekt.bb"))))))
+
+(def ^:private shipped-test-excludes
+  "The test source sets detekt 1.23.8 excuses, verbatim from its own default
+  config. `androidHostTest` is not among them, which is the whole defect: the
+  name postdates detekt 1.23.8, so fifteen rules that detekt intends off in
+  test code stay on in the host test source set of a
+  `com.android.kotlin.multiplatform.library` module."
+  ["**/test/**" "**/androidTest/**" "**/commonTest/**" "**/jvmTest/**"
+   "**/androidUnitTest/**" "**/androidInstrumentedTest/**" "**/jsTest/**"
+   "**/iosTest/**"])
+
+(def ^:private rules-excluding-test-sources
+  "Every rule that carries that list in detekt 1.23.8, as section and rule.
+  Obtained from the shipped config, not from taste: the baseline's job is to
+  extend detekt's own intent to a name detekt does not know, so the set of
+  rules it touches is detekt's to choose."
+  [[:comments :KDocReferencesNonPublicProperty]
+   [:comments :UndocumentedPublicClass]
+   [:comments :UndocumentedPublicFunction]
+   [:comments :UndocumentedPublicProperty]
+   [:complexity :StringLiteralDuplication]
+   [:complexity :TooManyFunctions]
+   [:exceptions :InstanceOfCheckForException]
+   [:exceptions :ThrowingExceptionsWithoutMessageOrCause]
+   [:exceptions :TooGenericExceptionCaught]
+   [:naming :FunctionNaming]
+   [:performance :ForEachOnRange]
+   [:performance :SpreadOperator]
+   [:potential-bugs :LateinitUsage]
+   [:potential-bugs :UnsafeCallOnNullableType]
+   [:style :MagicNumber]])
+
+(defn- baseline-yaml []
+  (yaml/parse-string (slurp (str (fs/path kotlin-scripts-dir "templates" "detekt-kmp.yml")))))
+
+(deftest detekt-baseline-was-measured-against-the-version-the-tool-pins
+  (is (= measured-detekt-version detekt-version)
+      (str "detekt is pinned to " detekt-version " but the baseline was measured "
+           "against " measured-detekt-version ". Re-extract "
+           "default-detekt-config.yml from the new jar and check both "
+           "corrections still describe it.")))
+
+(deftest detekt-baseline-teaches-every-rule-the-source-set-name-detekt-lacks
+  (let [cfg (baseline-yaml)]
+    (doseq [[section rule] rules-excluding-test-sources]
+      (let [excludes (get-in cfg [section rule :excludes])]
+        (testing (str section "/" rule)
+          (is (some? excludes) "the rule is missing from the baseline")
+          (testing "the host test source set is excused"
+            (is (contains? (set excludes) "**/androidHostTest/**")))
+          (testing "and nothing detekt already excused was dropped"
+            ;; Replacing the list instead of extending it would switch these
+            ;; rules back on for source sets detekt had excluded, which is a
+            ;; regression the count of findings would not reveal.
+            (is (empty? (remove (set excludes) shipped-test-excludes)))))))))
+
+(deftest detekt-baseline-keeps-magic-number-off-gradle-scripts
+  ;; MagicNumber is the one rule whose shipped list is not only source sets: it
+  ;; also excludes `**/*.kts`. Extending the list must not lose that.
+  (is (contains? (set (get-in (baseline-yaml) [:style :MagicNumber :excludes]))
+                 "**/*.kts")))
+
+(deftest detekt-baseline-leaves-composable-naming-to-the-compose-guidelines
+  (let [rule (get-in (baseline-yaml) [:naming :FunctionNaming])]
+    (testing "scoped to the annotation, so a plain PascalCase function is still reported"
+      ;; Path-scoping it would excuse `fun MainViewController()` in iosMain,
+      ;; which is PascalCase for Swift's benefit and is the author's call to
+      ;; defend. Measured: with this baseline the composables stop being
+      ;; reported and that one function does not.
+      (is (= ["Composable"] (vec (:ignoreAnnotated rule)))))
+    (testing "and the pattern itself is left alone"
+      (is (nil? (:functionPattern rule))))))
+
+(deftest detekt-baseline-corrects-and-does-not-quieten
+  ;; The bar for a third entry in that file. Everything else measured on a real
+  ;; Compose Multiplatform project is still reported, including two rules it
+  ;; would have been easy to call false positives: MatchingDeclarationName on
+  ;; `Platform.android.kt` asks for `AndroidPlatform.android.kt`, which keeps
+  ;; the platform suffix and satisfies the rule, and WildcardImport on
+  ;; `androidx.compose.runtime.*` is a wildcard import like any other.
+  (let [text (slurp (str (fs/path kotlin-scripts-dir "templates" "detekt-kmp.yml")))
+        cfg (baseline-yaml)]
+    (testing "no rule is switched off"
+      (is (not (str/includes? text "active: false"))))
+    (testing "and no rule measured as a genuine finding was touched"
+      (doseq [rule [:MatchingDeclarationName :WildcardImport :NewLineAtEndOfFile
+                    :LongMethod :LongParameterList :ComplexCondition]]
+        (is (empty? (for [[_ section] cfg :when (contains? section rule)] rule))
+            (str rule " is a finding to answer, not a correction to detekt"))))))
+
+;; --------------------------------------------- detekt, end to end through bb
+
+(def ^:private fake-java
+  "A stand-in for the JVM detekt runs on, so detekt.bb's own behaviour can be
+  tested without a 50MB download.
+
+  Substituting `java` rather than the jar is what makes this cheap: the jar is
+  never opened, so an empty file satisfies the tool's download check. It
+  records the command line it was handed beside the report it writes, which
+  makes the assertions below about what detekt.bb *did* - which configs reached
+  detekt, in which order, and whether they were applied as corrections to the
+  defaults or as a replacement for them."
+  (str "#!/bin/sh\n"
+       ;; One argument per line, not the arguments joined by spaces. A path with
+       ;; a space in it - this repository's own, for one - is indistinguishable
+       ;; from two arguments once they are joined, and the assertions below are
+       ;; about exactly which paths were passed.
+       "report=''; prev=''\n"
+       "for a in \"$@\"; do\n"
+       "  case \"$prev\" in --report) report=\"${a#xml:}\";; esac\n"
+       "  prev=\"$a\"\n"
+       "done\n"
+       "dir=$(dirname \"$report\")\n"
+       "mkdir -p \"$dir\"\n"
+       "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$dir/java-argv.txt\"\n"
+       "{\n"
+       "  echo '<?xml version=\"1.0\" encoding=\"UTF-8\"?>'\n"
+       "  echo '<checkstyle version=\"4.3\">'\n"
+       "  echo '  <file name=\"App.kt\">'\n"
+       "  echo '    <error line=\"7\" column=\"1\" severity=\"warning\"'\n"
+       "  echo '           message=\"is a wildcard import\" source=\"detekt.WildcardImport\" />'\n"
+       "  echo '  </file>'\n"
+       "  echo '</checkstyle>'\n"
+       "} > \"$report\"\n"
+       ;; detekt's own "issues found" code, so the tool is exercised on the path
+       ;; a real run takes rather than on the clean-report path.
+       "exit 2\n"))
+
+(defn- install-fake-detekt! [root]
+  (let [exe (fs/path root "bin" "java")]
+    (write! exe fake-java)
+    (fs/set-posix-file-permissions exe "rwxr-xr-x"))
+  (touch! (fs/path root ".swarmforge" "tools"
+                   (str "detekt-cli-" detekt-version "-all.jar"))))
+
+(defn- run-with-fake-java
+  "Run a tool with the fixture's `bin` first on PATH, so the `java` it invokes is
+  the stand-in written there rather than the real JDK."
+  [root tool & args]
+  (apply sh/sh "bb" (str (fs/path kotlin-scripts-dir tool))
+         (concat args [:dir (str root)
+                       :env (merge (into {} (System/getenv))
+                                   {"GIT_CONFIG_NOSYSTEM" "1"
+                                    "PATH" (str (fs/path root "bin") ":"
+                                                (System/getenv "PATH"))})])))
+
+(defn- configs-given-to-detekt
+  "The --config value detekt was actually handed, split the way detekt splits
+  it. Read from the recorded command line, not from the tool's own summary."
+  [root]
+  (let [argv (str/split-lines
+              (slurp (str (fs/path root ".swarmforge" "kotlin" "detekt" "java-argv.txt"))))
+        value (second (drop-while #(not= "--config" %) argv))]
+    {:argv argv
+     ;; Split on the comma, because that is how detekt reads the value: it
+     ;; refuses a repeated --config, so one option carries every file.
+     :configs (if value (str/split value #",") [])}))
+
+(defn- same-file? [a b]
+  (= (str (fs/real-path a)) (str (fs/real-path b))))
+
+(deftest detekt-applies-the-forks-baseline-before-the-projects-own-config
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/App.kt"
+              "detekt.yml"]
+    (fn [root]
+      (init-repo! root)
+      (install-fake-detekt! root)
+      (let [{:keys [exit out]} (run-with-fake-java root "detekt.bb")
+            {:keys [argv configs]} (configs-given-to-detekt root)]
+        (is (zero? exit) out)
+        (testing "both configs reached detekt, the baseline first"
+          ;; Order is the whole mechanism: detekt applies configs left to right
+          ;; and later ones win, so this is what lets a project override the
+          ;; baseline and stops the baseline overriding the project.
+          (is (= 2 (count configs)))
+          (is (str/ends-with? (first configs) "templates/detekt-kmp.yml"))
+          (is (same-file? (second configs) (fs/path root "detekt.yml"))))
+        (testing "as corrections to the defaults, not as a replacement for them"
+          ;; Without this flag every rule absent from the two files switches
+          ;; off, and detekt reports almost nothing - a clean report that means
+          ;; no analysis happened.
+          (is (some #{"--build-upon-default-config"} argv)))
+        (testing "and the report names each config that shaped it"
+          (is (str/includes? out "detekt-kmp.yml"))
+          (is (str/includes? out "detekt.yml"))
+          (is (not (str/includes? out "no project detekt.yml"))))
+        (testing "the findings are parsed rather than counted from the exit code"
+          (is (str/includes? out "Findings: 1"))
+          (is (str/includes? out "WildcardImport")))))))
+
+(deftest detekt-ships-its-baseline-even-when-a-config-is-named-on-the-command-line
+  ;; Which corrections apply is not a per-run decision for the role running the
+  ;; tool, for the same reason the tools refuse a hand-written `pitest` task.
+  ;; `--config` adds a config; it does not replace the baseline.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/App.kt"
+              "strict.yml"]
+    (fn [root]
+      (init-repo! root)
+      (install-fake-detekt! root)
+      (let [{:keys [exit out]} (run-with-fake-java root "detekt.bb"
+                                                   "--config" (str (fs/path root "strict.yml")))
+            {:keys [configs]} (configs-given-to-detekt root)]
+        (is (zero? exit) out)
+        (is (= 2 (count configs)))
+        (is (str/ends-with? (first configs) "templates/detekt-kmp.yml"))
+        (is (same-file? (second configs) (fs/path root "strict.yml")))))))
+
+(deftest detekt-says-so-when-a-project-has-no-config-of-its-own
+  ;; A finding absent because a config removed it and a finding absent because
+  ;; the code is clean read the same way in a count, so the summary names the
+  ;; configs and says when the only one is the fork's.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/App.kt"]
+    (fn [root]
+      (init-repo! root)
+      (install-fake-detekt! root)
+      (let [{:keys [exit out]} (run-with-fake-java root "detekt.bb")
+            {:keys [configs]} (configs-given-to-detekt root)]
+        (is (zero? exit) out)
+        (is (= 1 (count configs)))
+        (is (str/ends-with? (first configs) "templates/detekt-kmp.yml"))
+        (is (str/includes? out "no project detekt.yml"))))))
+
+(deftest detekt-refuses-a-config-path-it-cannot-pass-instead-of-mis-splitting
+  ;; detekt separates config files with commas and refuses the option twice, so
+  ;; a path containing a comma is not merely awkward: detekt would read it as
+  ;; two file names, fail to find either, and produce a report shaped by rules
+  ;; nobody chose. Saying so beats a plausible-looking report.
+  (with-tree ["settings.gradle.kts"
+              "shared/src/commonMain/kotlin/com/example/App.kt"
+              "config,old/detekt.yml"]
+    (fn [root]
+      (init-repo! root)
+      (install-fake-detekt! root)
+      (let [{:keys [exit err]} (run-with-fake-java root "detekt.bb" "--config"
+                                                   (str (fs/path root "config,old" "detekt.yml")))]
+        (is (not (zero? exit)))
+        (is (str/includes? err "contains a comma"))
+        (testing "and it says so before running anything"
+          (is (not (fs/exists? (fs/path root ".swarmforge" "kotlin" "detekt" "java-argv.txt")))))))))
 
 ;; ------------------------------------------------------------- regression gate
 

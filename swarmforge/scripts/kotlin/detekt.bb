@@ -51,13 +51,68 @@
                :when (fs/exists? path)]
            (str path))))
 
-(defn run-detekt [jar inputs config]
+;; detekt's defaults are wrong about this toolchain in two measurable ways, and
+;; neither can be expressed on the command line - detekt takes per-rule options
+;; only through a config file. So one ships with the tool, and it always applies.
+;;
+;; It corrects, it does not quieten. `@Composable` functions are PascalCase
+;; because the Compose API guidelines require it and Android Studio's own lint
+;; reports the camelCase form detekt asks for, so a rule that asks for camelCase
+;; there is wrong rather than strict. And `androidHostTest` appears in none of
+;; the fifteen test-source-set exclusion lists detekt ships, because detekt
+;; 1.23.8 predates the plugin that named it - measured with two identical files,
+;; one in `androidHostTest` and one in `androidUnitTest`, scoring two findings
+;; and none. Everything else measured on a real Compose project is still
+;; reported; the file lists what and why.
+(defn baseline-config []
+  (s/templates-dir "detekt-kmp.yml"))
+
+(defn config-chain
+  "The config files to apply, in the order detekt applies them: the fork's KMP
+  baseline first, then the project's own if it has one.
+
+  Later files override earlier ones, so a project that disagrees with the
+  baseline overrides it by writing its own `detekt.yml` - and the baseline can
+  never override the project. The baseline is not optional, for the same reason
+  the tools refuse a hand-written `pitest` task: which corrections apply is not
+  a per-run decision for the role running the tool."
+  [given]
+  (let [chain (into [(baseline-config)] (when (string? given) [given]))]
+    ;; A comma in a path would be read as the separator between two configs, so
+    ;; detekt would look for files that do not exist and report on rules nobody
+    ;; chose. Measured: detekt refuses a repeated `--config` ("Can only specify
+    ;; option --config once"), so the comma form is the only one available and
+    ;; the hazard cannot be designed away - it can only be named before it
+    ;; produces a report that looks legitimate.
+    (when-let [bad (seq (filter #(str/includes? % ",") chain))]
+      (s/die! "A detekt config path contains a comma:"
+              (str/join "\n" bad)
+              ""
+              "detekt separates its config files with commas and accepts the"
+              "option only once, so such a path cannot be passed at all."
+              "Rename the directory, or move the worktree somewhere without a comma."))
+    chain))
+
+(defn run-detekt [jar inputs configs]
   (let [xml-out (fs/path (s/state-dir "detekt") "detekt.xml")
         cmd (concat ["java" "-jar" jar
                      "--input" (str/join "," inputs)
                      "--report" (str "xml:" xml-out)
                      "--parallel"]
-                    (when config ["--config" config "--build-upon-default-config"]))
+                    ;; Comma-separated, because that is the only way detekt
+                    ;; takes more than one config: it refuses a repeated
+                    ;; --config with "Can only specify option --config once".
+                    ;; config-chain has already rejected a path with a comma in
+                    ;; it, which this form would otherwise mis-split.
+                    ;;
+                    ;; --build-upon-default-config so these files are read as
+                    ;; corrections to the defaults rather than as a replacement
+                    ;; for them. Without it, every rule absent from the two
+                    ;; files switches off and detekt reports almost nothing - a
+                    ;; clean report meaning no analysis, which is the failure
+                    ;; mode this fork keeps finding.
+                    ["--config" (str/join "," configs)
+                     "--build-upon-default-config"])
         out (java.io.StringWriter.)
         err (java.io.StringWriter.)
         {:keys [exit]} (p/sh (vec cmd) {:dir (s/worktree-root) :out out :err err})]
@@ -69,8 +124,9 @@
               (str/trim (str err))
               ""
               (if (= 3 exit)
-                (str "Exit 3 means the configuration at " config " is invalid."
-                     " Fix the config; do not delete it.")
+                (str "Exit 3 means one of these configurations is invalid: "
+                     (str/join ", " configs)
+                     ". Fix the config; do not delete it.")
                 "Fix the invocation or report it. Do not estimate static-analysis findings.")))
     {:exit exit :xml (str xml-out) :log (str err)}))
 
@@ -114,17 +170,22 @@
       (s/die! "No .kt files found in any src directory."
               (str "Searched under " (s/worktree-root))
               "Run this from the worktree assigned to your role."))
-    (let [config (let [given (get flags "--config")]
-                   (if (string? given) given (project-config)))
+    (let [given (let [g (get flags "--config")]
+                  (if (string? g) g (project-config)))
+          configs (config-chain given)
           jar (detekt-jar)
           _ (s/progress "running detekt over" (count kotlin-files) "Kotlin files")
-          result (run-detekt jar inputs config)
+          result (run-detekt jar inputs configs)
           items (vec (findings (:xml result)))]
       (s/heading "Static analysis (detekt)")
-      (println (format "detekt %s   config: %s   files: %d"
-                       detekt-version
-                       (if config (relative config) "built-in defaults")
-                       (count kotlin-files)))
+      ;; Every config that shaped this report, in the order it was applied. The
+      ;; baseline is named rather than assumed, because a finding that is absent
+      ;; because a config removed it and a finding that is absent because the
+      ;; code is clean read the same way in a count.
+      (println (format "detekt %s   files: %d" detekt-version (count kotlin-files)))
+      (println (format "Config: defaults + %s" (str/join " + " (map relative configs))))
+      (when-not given
+        (println "        (no project detekt.yml; write one to override the baseline)"))
       (println (format "Findings: %d" (count items)))
       (when (seq items)
         (println)

@@ -1,0 +1,118 @@
+# detekt baseline for Kotlin Multiplatform and Compose Multiplatform.
+#
+# Layered under the project's own detekt config, not instead of it: detekt is
+# invoked with --build-upon-default-config and this file first, so detekt's
+# defaults apply, then these corrections, then anything the project sets. A
+# project that disagrees overrides it by writing its own detekt.yml.
+#
+# Two entries, and the bar for a third is high. This file exists to correct
+# detekt where it is factually wrong about this toolchain, not to quieten it
+# where it is inconvenient. A rule that asks for something the framework
+# forbids is wrong; a rule that asks for something you would rather not do is
+# a finding. Everything measured on a real Compose Multiplatform project and
+# left reported is listed at the bottom, with why.
+
+comments:
+  # `androidHostTest` is missing from every one of the fifteen test-source-set
+  # exclusion lists detekt ships, because detekt 1.23.8 predates the
+  # `com.android.kotlin.multiplatform.library` plugin that named it. detekt
+  # already intends these rules off in test code; the list simply does not
+  # know the name. Measured: two identical files, one in `androidHostTest` and
+  # one in `androidUnitTest`, produced two findings and none respectively.
+  #
+  # The names are appended rather than replacing the list, because dropping
+  # `**/test/**` or `**/commonTest/**` would turn these rules back on for
+  # source sets detekt had already excused.
+  #
+  # `androidDeviceTest` is the Tier 2 counterpart under the same plugin. It is
+  # here for the same reason and not because anything was measured in it: no
+  # emulator suite exists in the project this was measured on.
+  KDocReferencesNonPublicProperty: &test-source-sets
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/jsTest/**'
+      - '**/iosTest/**'
+      - '**/androidHostTest/**'
+      - '**/androidDeviceTest/**'
+  UndocumentedPublicClass: *test-source-sets
+  UndocumentedPublicFunction: *test-source-sets
+  UndocumentedPublicProperty: *test-source-sets
+
+complexity:
+  StringLiteralDuplication: *test-source-sets
+  TooManyFunctions: *test-source-sets
+
+exceptions:
+  InstanceOfCheckForException: *test-source-sets
+  ThrowingExceptionsWithoutMessageOrCause: *test-source-sets
+  TooGenericExceptionCaught: *test-source-sets
+
+naming:
+  FunctionNaming:
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/jsTest/**'
+      - '**/iosTest/**'
+      - '**/androidHostTest/**'
+      - '**/androidDeviceTest/**'
+    # A composable that returns Unit is named in PascalCase. That is not a
+    # style preference to weigh against detekt's: the Compose API guidelines
+    # require it, and Android Studio's own `ComposableNaming` lint reports the
+    # camelCase form detekt asks for. Obeying detekt here means failing the
+    # framework's own check, so the rule is wrong rather than strict.
+    #
+    # Annotation-scoped, not path-scoped. A plain function in the same file
+    # still has to be camelCase - measured on a real project, `fun
+    # MainViewController()` in `iosMain` stays reported, and it should: it is
+    # PascalCase for Swift's benefit, which is the author's call to defend.
+    ignoreAnnotated:
+      - 'Composable'
+
+performance:
+  ForEachOnRange: *test-source-sets
+  SpreadOperator: *test-source-sets
+
+potential-bugs:
+  LateinitUsage: *test-source-sets
+  UnsafeCallOnNullableType: *test-source-sets
+
+style:
+  MagicNumber:
+    excludes:
+      - '**/test/**'
+      - '**/androidTest/**'
+      - '**/commonTest/**'
+      - '**/jvmTest/**'
+      - '**/androidUnitTest/**'
+      - '**/androidInstrumentedTest/**'
+      - '**/jsTest/**'
+      - '**/iosTest/**'
+      - '**/androidHostTest/**'
+      - '**/androidDeviceTest/**'
+      - '**/*.kts'
+
+# Measured on a Compose Multiplatform project and deliberately still reported:
+#
+# - `MatchingDeclarationName` on `Platform.android.kt`, which holds one class
+#   called `AndroidPlatform`. detekt already knows the platform suffix - its
+#   `multiplatformTargets` option lists `ios` and `android` - so it is asking
+#   for `AndroidPlatform.android.kt`, which keeps the suffix and satisfies the
+#   rule. A satisfiable request is a finding, even when the project template
+#   that generated the file did not satisfy it.
+# - `WildcardImport` on `androidx.compose.runtime.*`. Common in Compose code
+#   and not required by it. Naming the imports is available.
+# - `FunctionNaming` on a PascalCase function with no `@Composable`.
+# - `NewLineAtEndOfFile`, nine times. True every time.
+#
+# Do not add any of these. If detekt is noisy on a project, that is the
+# project's `detekt.yml` to write, with the reason written next to each entry.
