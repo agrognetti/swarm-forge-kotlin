@@ -60,4 +60,5 @@
         (spit msg-file (append-byline text role-name)))))
   (System/exit 0))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

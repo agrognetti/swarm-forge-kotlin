@@ -1469,6 +1469,39 @@
     (is (not (str/includes? (str (:status card)) "view transcript")))
     (is (not (str/includes? (str (:status card)) "running the handoff command again")))))
 
+(deftest pack-web-codex-status-is-last-work-bullet
+  ;; Given a Codex pane of throwaway bullets then a work bullet with no I'll
+  ;; When --test-status-pane
+  ;; Then status is that work bullet
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "• You have 1 usage limit reset available. Run /usage to use one.\n"
+                                  "• Ran 4 commands · ctrl + t to view transcript\n"
+                                  "• Edited features/htw.feature\n"
+                                  "• Added tmp/htw_handoff.txt\n"
+                                  "• Searching the web\n"
+                                  "• Searched the web for yob\n"
+                                  "• Working (3s • esc to interrupt)\n"
+                                  "• The specification now makes every random domain explicit.\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "specification now makes every random domain explicit"))
+    (is (not (str/includes? (str (:status card)) "Ran 4")))
+    (is (not (str/includes? (str (:status card)) "Working")))))
+
+(deftest pack-web-non-codex-status-still-uses-ill
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (set-backend! root "grok")
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "I'll write the cave stories.\n")
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll write the cave stories"))))
+
 (deftest pack-web-card-status-ignores-handoff-mail-banner
   ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner
   ;; When --test-status-pane
@@ -1546,6 +1579,45 @@
     (is (str/includes? (str (:status (get by-name "Holy Hand Grenade")))
                        "I'm merging the grenade"))
     (is (= "waiting in queue" (:status (get by-name "HTW"))))))
+
+(deftest pack-web-shows-yellow-merging-card-for-handback
+  ;; Given htw in architect and jump in coder, plus a reverse htw copy in coder in_process
+  ;; When --test-status-pane
+  ;; Then a merging card for htw is in coder with pane status, jump waits, real htw stays architect
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        _ (setup-pack! root roles)
+        _ (create-task root "htw" "architect")
+        _ (create-task root "jump" "coder")
+        _ (write-file
+           (fs/path (in-process-dir root roles "coder")
+                    "00_from_refactorer_to_coder.handoff")
+           (str "from: refactorer\nto: coder\npriority: 00\ntype: git_handoff\n"
+                "task: htw\nnon-forwarding: true\n\nmerge\n"))
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "• The reverse handoff is structurally reconciled.\n")
+        state (json/parse-string (:out result) true)
+        cards (:tasks state)
+        merging (filterv :merging cards)
+        jump-card (first (filter #(= "jump" (:name %)) cards))
+        htw-card (first (filter #(and (= "htw" (:name %)) (= "architect" (:lane %))) cards))]
+    (is (zero? (:exit result)))
+    (is (= ["htw" "htw" "jump"] (mapv :name cards)))
+    (is (= 1 (count merging)))
+    (is (= "coder" (:lane (first merging))))
+    (is (= "htw" (:name (first merging))))
+    (is (str/includes? (str (:status (first merging))) "reverse handoff is structurally reconciled"))
+    (is (= "waiting in queue" (:status jump-card)))
+    (is (= "architect" (:lane htw-card))))
+  (let [root (tmp-dir)
+        roles four-pack-roles
+        _ (setup-pack! root roles)
+        _ (create-task root "htw" "architect")
+        _ (create-task root "jump" "coder")
+        state (web-state root)
+        merging (filterv :merging (:tasks state))]
+    (is (= [] merging))
+    (is (= "architect" (task-lane root "htw")))))
 
 (deftest pack-web-pending-approval-card-says-waiting-for-approval
   ;; Given HTW in specifier and a pending specifier→coder git_handoff for HTW
@@ -1875,6 +1947,95 @@
       (is (zero? (:exit blanked)))
       (is (= "" (get after "features/console.feature")))
       (is (contains? after "features/console.feature")))))
+
+(deftest pack-web-document-api-keeps-comment-history-and-last-diff
+  (let [root (tmp-dir)
+        _ (run {:dir root} "git" "init" "-q")
+        _ (run {:dir root} "git" "config" "user.email" "test@example.com")
+        _ (run {:dir root} "git" "config" "user.name" "Test User")
+        _ (setup-pack! root)
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (run {:dir root} "git" "add" "features/console.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "base")
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        first-sha (do (write-file (fs/path root "features/console.feature")
+                                  "Feature: cave\n---\n  Scenario: one\n")
+                      (run {:dir root} "git" "add" "features/console.feature")
+                      (run {:dir root} "git" "commit" "-q" "-m" "offer-1")
+                      (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
+        _ (write-file
+           (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")
+           (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                "task_id: " task-id "\ntask: HTW\n"
+                "commit: " first-sha "\n"
+                "artifacts: features/console.feature\n\npayload\n"))
+        first-doc (json/parse-string
+                   (:out (pack-web root true "--test-api-doc" (str root)
+                                   "features/console.feature" "50_first"))
+                   true)]
+    (is (false? (:has_diff first-doc)))
+    (is (= [] (:history first-doc)))
+    (is (str/includes? (:text first-doc) "Feature: cave"))
+    (pack-web root true "--test-save-comments" (str root)
+              "50_first" "features/console.feature" "needs an RNG")
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_first" "retry the spec"))))
+    (write-file (fs/path root "features/console.feature") "Feature: cave\n  Scenario: two\n")
+    (run {:dir root} "git" "add" "features/console.feature")
+    (run {:dir root} "git" "commit" "-q" "-m" "offer-2")
+    (let [second-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file
+       (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")
+       (str "from: specifier\nto: coder\ntype: git_handoff\n"
+            "task_id: " task-id "\ntask: HTW\n"
+            "commit: " second-sha "\n"
+            "artifacts: features/console.feature\n\npayload\n"))
+      (let [doc (json/parse-string
+                 (:out (pack-web root true "--test-api-doc" (str root)
+                                 "features/console.feature" "50_second"))
+                 true)
+            hist (vec (:history doc))]
+        (is (true? (:has_diff doc)))
+        (is (= 1 (count hist)))
+        (is (= "needs an RNG" (:text (first hist))))
+        (is (not (str/blank? (:at (first hist)))))
+        (is (some #(and (= "del" (:type %)) (str/includes? (str (:text %)) "one"))
+                  (:lines doc)))
+        (is (some #(and (= "del" (:type %)) (= "---" (:text %)))
+                  (:lines doc)))
+        (is (some #(and (= "add" (:type %)) (str/includes? (str (:text %)) "two"))
+                  (:lines doc)))
+        (is (some #(and (= "same" (:type %)) (str/includes? (str (:text %)) "Feature: cave"))
+                  (:lines doc)))))
+    (pack-web root true "--test-approve" (str root) "50_second")
+    (is (not (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id "reviews.json"))))))
+
+(deftest pack-web-document-api-hides-diff-when-git-fails
+  (let [root (tmp-dir)
+        _ (run {:dir root} "git" "init" "-q")
+        _ (run {:dir root} "git" "config" "user.email" "test@example.com")
+        _ (run {:dir root} "git" "config" "user.name" "Test User")
+        _ (setup-pack! root)
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (run {:dir root} "git" "add" "features/console.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "base")
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+    (run {:dir root} "git" "branch" "-f" (str "rejected/" task-id "/latest") sha)
+    (write-file
+     (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
+     (str "from: specifier\nto: coder\ntype: git_handoff\n"
+          "task_id: " task-id "\ntask: HTW\n"
+          "commit: notacommit\n"
+          "artifacts: features/console.feature\n\npayload\n"))
+    (let [doc (json/parse-string
+               (:out (pack-web root true "--test-api-doc" (str root)
+                               "features/console.feature" "50_hello"))
+               true)]
+      (is (false? (:has_diff doc)))
+      (is (= [] (:lines doc))))))
 
 (deftest pack-web-approve-discards-remedial-comments
   (let [root (tmp-dir)

@@ -261,7 +261,7 @@
 (def required-helpers
   ["handoff_lib.bb" "swarm_handoff.sh" "swarm_handoff.bb"
    "swarm_tool.sh" "swarm_tool.bb"
-   "commit-msg-hook.sh" "commit-msg-hook.bb"
+   "commit-msg-hook.sh" "commit_msg_hook.bb"
    "merge_and_process.sh" "merge_and_process.bb"
    "ready_for_next.sh" "ready_for_next.bb"
    "ready_for_next_guard.bb"
@@ -271,7 +271,7 @@
    "ready_for_next_batch.sh" "ready_for_next_batch.bb"
    "done_with_current_batch.sh" "done_with_current_batch.bb"
    "handoffd.bb" "stop_handoff_daemon.bb" "stop_handoff_daemon.sh"
-   "swarm-cleanup.sh" "swarm-window-watchdog.sh" "swarm-window-watchdog.bb"
+   "swarm-cleanup.sh" "swarm-window-watchdog.sh" "swarm_window_watchdog.bb"
    "swarm-terminal-adapter.sh" "swarmforge.sh" "swarmforge.bb"
    "pack_board.sh" "pack_board.bb"
    "pack_web.sh" "pack_web.bb"
@@ -300,7 +300,7 @@
 (defn install-commit-msg-hook! [ctx]
   (let [dir (git-hooks-dir ctx)
         hook (fs/path dir "commit-msg")
-        bb (str (fs/absolutize (fs/path (:script-dir ctx) "commit-msg-hook.bb")))]
+        bb (str (fs/absolutize (fs/path (:script-dir ctx) "commit_msg_hook.bb")))]
     (fs/create-dirs dir)
     (spit (str hook)
           (str "#!/usr/bin/env zsh\n"
@@ -980,4 +980,5 @@
     "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

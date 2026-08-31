@@ -103,4 +103,5 @@
         (println "COMPLETED_BATCH:" (str target-dir))
         (finish-done!)))))
 
-(-main)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))

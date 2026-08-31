@@ -92,4 +92,5 @@
         (println "COMPLETED:" (str target-file))
         (finish-done!)))))
 
-(-main)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))

@@ -27,7 +27,10 @@
 
 (def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text "--role" :role "--task-id" :task-id})
 (def script-dir (fs/parent *file*))
-(load-file (str (fs/path script-dir "handoff_lib.bb")))
+(try
+  (require 'handoff-lib)
+  (catch Exception _
+    (load-file (str (fs/path script-dir "handoff_lib.bb")))))
 
 (defn usage []
   (binding [*out* *err*]
@@ -146,7 +149,7 @@
           (if (seq rows)
             (str (str/join "\n" rows) "\n")
             ""))
-    (fs/move tmp file {:replace-existing true})))
+    (fs/move tmp file {:replace-existing true :atomic-move true})))
 
 (defn row-name [line]
   (first (str/split line #"\t")))
@@ -307,10 +310,10 @@
         root (resolve-root opts)
         file (tasks-file root)]
     (require-value! task-id "task ID")
-    (when (fs/exists? file)
-      (with-board-lock
-        root
-        (fn []
+    (with-board-lock
+      root
+      (fn []
+        (when (fs/exists? file)
           (let [rows (read-rows file)
                 present? (some #(let [[name _lane _created _updated row-task-id]
                                       (str/split % #"\t" -1)]
@@ -357,4 +360,5 @@
           (exit! 1 nil))))
   (System/exit 0))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

@@ -273,4 +273,5 @@
       (do (usage)
           (System/exit 1)))))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

@@ -42,4 +42,5 @@
   (stop! (or (first args) (usage)))
   (System/exit 0))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

@@ -6,7 +6,10 @@
             [clojure.string :as str]))
 
 (def script-dir (fs/parent *file*))
-(load-file (str (fs/path script-dir "ready_for_next_guard.bb")))
+(try
+  (require 'ready-for-next-guard)
+  (catch Exception _
+    (load-file (str (fs/path script-dir "ready_for_next_guard.bb")))))
 
 (defn state-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
@@ -143,4 +146,5 @@
               (merge-git-handoff! target-file)
               (print-task target-file))))))))
 
-(-main)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))

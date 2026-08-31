@@ -135,6 +135,8 @@ test.describe("pack dashboard", () => {
     const doc = await popupPromise;
     await doc.waitForLoadState("domcontentloaded");
     await expect(doc.locator("pre")).toContainText("Feature: console");
+    await expect(doc.locator("#doc-history")).toBeVisible();
+    await expect(doc.locator("#doc-diff")).toBeDisabled();
     await expect(doc.locator("#doc-comments")).toBeVisible();
     await expect(doc.locator("#doc-save")).toHaveText("Save");
     await expect(doc.locator("#doc-cancel")).toHaveText("Cancel");
@@ -157,6 +159,13 @@ test.describe("pack dashboard", () => {
     await page.reload();
     await expect(page.locator("#attention-approvals .btn-approve")).toBeDisabled();
     await expect(page.locator("#attention-approvals .doc-mark-bad")).toHaveCount(1);
+    const historyPath = path.join(
+      handle.root,
+      ".swarmforge/rejected-tasks/20260101T000000Z-htw/reviews.json"
+    );
+    await expect.poll(() => fs.existsSync(historyPath)).toBeTruthy();
+    const history = JSON.parse(fs.readFileSync(historyPath, "utf8"));
+    expect(history["features/console.feature"][0].text).toBe("needs an RNG");
     fs.unlinkSync(reviewsPath);
   });
 

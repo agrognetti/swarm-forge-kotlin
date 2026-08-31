@@ -56,7 +56,7 @@
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
          in-process-for-row in-process-task-names approvals
          handoff-files batch-dirs in-process-dir allowed-doc?
-         delete-approval! retry-approval!)
+         delete-approval! retry-approval! parse-message pane-status-for role-rows)
 
 (defn usage []
   (binding [*out* *err*]
@@ -232,9 +232,45 @@
        (not (pane-chrome? sentence))
        (or (i-status? sentence) (other-status? sentence))))
 
+(defn strip-bullet [sentence]
+  (str/replace (or sentence "") #"^[•*]\s*" ""))
+
+(defn codex-throwaway-bullet? [sentence]
+  (let [n (str/lower-case (fold-apostrophe (strip-bullet sentence)))]
+    (boolean (or (re-find #"^(?:working|ran|edited|added|searching|searched)\b" n)
+                 (re-find #"you have \d+ usage limit reset available" n)
+                 (mail-banner? sentence)
+                 (pane-chrome? sentence)))))
+
+(defn codex-bullets [text]
+  (loop [lines (mapv str/trim (str/split-lines (or text "")))
+         current nil
+         out []]
+    (if-let [line (first lines)]
+      (cond
+        (str/blank? line)
+        (recur (next lines) current out)
+
+        (re-find #"^[•*]\s*" line)
+        (recur (next lines) line (cond-> out current (conj current)))
+
+        current
+        (recur (next lines) (str current " " line) out)
+
+        :else
+        (recur (next lines) current out))
+      (cond-> out current (conj current)))))
+
+(defn codex-status [text]
+  (last (remove codex-throwaway-bullet? (codex-bullets text))))
+
 (defn im-status [role text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
-        found (last (filter status-sentence? (pane-sentences (str/join "\n" tail))))]
+        joined (str/join "\n" tail)
+        found (if (= "codex" backend)
+                (or (codex-status joined)
+                    (last (filter status-sentence? (pane-sentences joined))))
+                (last (filter status-sentence? (pane-sentences joined))))]
     (if (seq found)
       (do (swap! pane-status assoc role found) found)
       (get @pane-status role ""))))
@@ -313,13 +349,36 @@
           {}
           (role-rows root)))
 
+(defn reverse-handoff? [path]
+  (let [h (:headers (parse-message path))]
+    (and (= "git_handoff" (get h "type"))
+         (= "true" (get h "non-forwarding")))))
+
+(defn merging-card [root row]
+  (when-let [file (first (filter reverse-handoff? (in-process-for-row row)))]
+    (let [h (:headers (parse-message file))
+          name (or (get h "task") (get h "task_id"))
+          role (first row)]
+      (when-not (str/blank? name)
+        {:name name
+         :id (str "merging-" (or (get h "task_id") name))
+         :lane role
+         :updated_at (or (not-empty (get h "dequeued_at")) "")
+         :audit_count 0
+         :merging true
+         :status (pane-status-for root role)}))))
+
+(defn merging-cards [root]
+  (vec (keep #(merging-card root %) (role-rows root))))
+
 (defn tasks [root]
-  (let [idx (batch-index root)]
-    (mapv (fn [task]
-            (if-let [batch (get idx (:name task))]
-              (assoc (task-with-status root task) :batch batch)
-              (task-with-status root task)))
-          (board-tasks root))))
+  (let [idx (batch-index root)
+        board (mapv (fn [task]
+                      (if-let [batch (get idx (:name task))]
+                        (assoc (task-with-status root task) :batch batch)
+                        (task-with-status root task)))
+                    (board-tasks root))]
+    (into (merging-cards root) board)))
 
 (defn parse-message [path]
   (let [content (slurp (str path))
@@ -371,6 +430,42 @@
 
 (defn drop-reviews! [root id]
   (fs/delete-if-exists (reviews-file root id)))
+
+(defn task-reviews-file [root task-id]
+  (fs/path root ".swarmforge" "rejected-tasks" task-id "reviews.json"))
+
+(defn read-task-reviews [root task-id]
+  (let [file (task-reviews-file root task-id)]
+    (if (and (not (str/blank? task-id)) (fs/regular-file? file))
+      (try
+        (let [parsed (json/parse-string (slurp (str file)))]
+          (if (map? parsed) parsed {}))
+        (catch Exception _ {}))
+      {})))
+
+(defn write-task-reviews! [root task-id store]
+  (when-not (str/blank? task-id)
+    (let [file (task-reviews-file root task-id)]
+      (fs/create-dirs (fs/parent file))
+      (spit (str file) (json/generate-string store)))))
+
+(defn drop-task-reviews! [root task-id]
+  (when-not (str/blank? task-id)
+    (fs/delete-if-exists (task-reviews-file root task-id))))
+
+(defn iso-now []
+  (.format java.time.format.DateTimeFormatter/ISO_INSTANT (java.time.Instant/now)))
+
+(defn append-task-review! [root task-id path comments]
+  (let [text (str/trim (or comments ""))]
+    (when (and (not (str/blank? task-id)) (not (str/blank? path)) (not (str/blank? text)))
+      (let [store (read-task-reviews root task-id)
+            entry {"at" (iso-now) "text" text}
+            history (conj (vec (get store path [])) entry)]
+        (write-task-reviews! root task-id (assoc store path history))))))
+
+(defn path-review-history [root task-id path]
+  (vec (get (read-task-reviews root task-id) path [])))
 
 (defn approval-entry [root path]
   (let [headers (:headers (parse-message path))
@@ -774,7 +869,8 @@
   (let [task-id (task-id-for-name root name)]
     (archive-rejected! root task-id name)
     (drop-task-handoffs! root task-id name)
-    (drop-task-audits! root task-id name))
+    (drop-task-audits! root task-id name)
+    (drop-task-reviews! root task-id))
   (pack-board root "delete" "--name" name)
   (fs/delete-if-exists (reject-notify root name)))
 
@@ -884,17 +980,23 @@
 
 (defn approve! [root id]
   (let [src (require-pending! root id)
+        headers (:headers (parse-message src))
         dest (fs/path root ".swarmforge" "handoffs" "outbox" (fs/file-name src))]
     (fs/create-dirs (fs/parent dest))
     (spit (str dest) (with-approved (slurp (str src))))
     (fs/delete-if-exists src)
-    (drop-reviews! root id)))
+    (drop-reviews! root id)
+    (drop-task-reviews! root (or (not-empty (get headers "task_id")) (get headers "task")))))
 
 (defn save-review! [root id path comments]
   (when (str/blank? path)
     (throw (ex-info "Missing path" {:http-status 400})))
-  (require-pending! root id)
-  (write-reviews! root id (assoc (read-reviews root id) path (str/trim (or comments "")))))
+  (let [src (require-pending! root id)
+        headers (:headers (parse-message src))
+        task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+        text (str/trim (or comments ""))]
+    (write-reviews! root id (assoc (read-reviews root id) path text))
+    (append-task-review! root task-id path text)))
 
 (defn write-reject-notify! [root task]
   (when-not (str/blank? task)
@@ -1058,7 +1160,8 @@
     (drop-task-audits! root task-id task)
     (pack-board root "delete" "--name" task)
     (fs/delete-if-exists (reject-notify root task))
-    (drop-reviews! root id)))
+    (drop-reviews! root id)
+    (drop-task-reviews! root task-id)))
 
 (defn approval-route [uri]
   (let [path (first (str/split (or uri "") #"\?"))]
@@ -1111,6 +1214,61 @@
        :headers {"Content-Type" "text/plain; charset=utf-8"}
        :body (slurp (str (existing-path root rel)))}
       {:status 404 :body "Not found"})))
+
+(defn parse-unified-diff [text]
+  (->> (str/split-lines (or text ""))
+       (drop-while #(not (str/starts-with? % "@@")))
+       rest
+       (keep (fn [line]
+               (cond
+                 (str/starts-with? line "+") {:type "add" :text (subs line 1)}
+                 (str/starts-with? line "-") {:type "del" :text (subs line 1)}
+                 (str/starts-with? line "\\") nil
+                 (str/starts-with? line " ") {:type "same" :text (subs line 1)}
+                 (str/blank? line) {:type "same" :text ""}
+                 :else {:type "same" :text line})))
+       vec))
+
+(defn file-diff-lines [root prior commit rel]
+  (let [result (apply sh ["git" "-C" (str root) "diff" "--no-color" "-U999999"
+                          prior commit "--" rel])]
+    (cond
+      (not (zero? (:exit result))) nil
+      (str/blank? (:out result))
+      (mapv (fn [line] {:type "same" :text line})
+            (str/split-lines (slurp (str (existing-path root rel)))))
+      :else (parse-unified-diff (:out result)))))
+
+(defn pending-headers [root id]
+  (let [path (when-not (str/blank? id) (pending-file root id))]
+    (when (and path (fs/regular-file? path))
+      (:headers (parse-message path)))))
+
+(defn get-api-doc [root uri]
+  (let [rel (query-value uri "path")
+        id (query-value uri "id")]
+    (if-not (allowed-doc? root rel)
+      {:status 404 :body "Not found"}
+      (let [text (slurp (str (existing-path root rel)))
+            headers (pending-headers root id)
+            task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+            commit (not-empty (get headers "commit"))
+            prior (when (and task-id (git-ref-exists? root (rejected-latest task-id)))
+                    (rejected-latest task-id))
+            lines (when (and prior commit)
+                    (file-diff-lines root prior commit rel))
+            has-diff (some? lines)
+            history (mapv (fn [item]
+                            {:at (or (get item "at") (:at item))
+                             :text (or (get item "text") (:text item))})
+                          (path-review-history root task-id rel))]
+        {:status 200
+         :headers {"Content-Type" "application/json; charset=utf-8"}
+         :body (json/generate-string {:path rel
+                                      :text text
+                                      :has_diff has-diff
+                                      :lines (or lines [])
+                                      :history history})}))))
 
 (defn task-query-name [uri]
   (when (str/starts-with? (or uri "") "/task")
@@ -1279,6 +1437,9 @@
 
     (task-query-name uri)
     (get-task root uri)
+
+    (str/starts-with? (first (str/split (or uri "") #"\?")) "/api/doc")
+    (get-api-doc root uri)
 
     (str/starts-with? (or uri "") "/doc")
     (get-doc root uri)
@@ -1620,6 +1781,16 @@
   (print (:body (handle-request (require-root! root)
                                 {:method "GET"
                                  :uri (str "/doc?path=" path)})))
+  (flush))
+
+(defn test-api-doc! [root path id]
+  (when (str/blank? path)
+    (exit! 1 "Missing path"))
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/api/doc?path=" path
+                                           (when-not (str/blank? id)
+                                             (str "&id=" id)))})))
   (flush))
 
 (defn test-teardown! [root confirm]

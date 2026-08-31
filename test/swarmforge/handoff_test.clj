@@ -1435,6 +1435,7 @@
     (is (str/includes? (handoff-body reverse) (str "merge_and_process.sh refactorer " sha)))
     (is (str/includes? (handoff-body reverse) "inbound tree is the structure"))
     (is (str/includes? (handoff-body forward) (str "merge_and_process.sh refactorer " sha)))
+    (is (str/includes? (handoff-body forward) "current tree is the structure"))
     (is (not (str/includes? (handoff-body forward) "inbound tree is the structure")))
     (is (not (str/includes? (handoff-body forward) extra)))
     (is (not (str/includes? (handoff-body reverse) extra)))
@@ -1466,7 +1467,8 @@
       (is (= "specifier" (header forward "to")))
       (is (= "true" (header forward "non-forwarding")))
       (is (str/includes? (handoff-body forward) "merge_and_process.sh architect"))
-      (is (not (str/includes? (handoff-body forward) "inbound tree is the structure")))
+      (is (str/includes? (handoff-body forward) "inbound tree is the structure"))
+      (is (not (str/includes? (handoff-body forward) "current tree is the structure")))
       (is (not (str/includes? (handoff-body forward) extra))))))
 
 (deftest swarm-handoff-six-pack-architect-back-all-skips-downstream
@@ -1524,8 +1526,10 @@
     (is (zero? (:exit result)))
     (is (= 1 (count (outbox-handoffs root))))
     (is (= "true" (header (outbox-to root "coder") "non-forwarding")))
+    (is (str/includes? (handoff-body (outbox-to root "coder"))
+                       "inbound tree is the structure"))
     (is (not (str/includes? (handoff-body (outbox-to root "coder"))
-                            "inbound tree is the structure")))))
+                            "current tree is the structure")))))
 
 (deftest swarm-handoff-refuses-git-handoff-when-inbound-is-non-forwarding
   ;; Given an in-process inbound git_handoff tagged non-forwarding

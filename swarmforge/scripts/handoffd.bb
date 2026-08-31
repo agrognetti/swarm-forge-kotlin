@@ -15,19 +15,36 @@
     (println "Usage: handoffd.bb [--once] <project-root>"))
   (System/exit 1))
 
-(def once? (some #(= "--once" %) *command-line-args*))
-(def project-root
-  (or (first (remove #(= "--once" %) *command-line-args*)) (usage)))
+(def once? false)
+(def project-root nil)
 (def script-dir (fs/parent *file*))
-
-(def state-dir (fs/path project-root ".swarmforge"))
-(def daemon-dir (fs/path state-dir "daemon"))
-(def roles-file (fs/path state-dir "roles.tsv"))
-(def socket-file (fs/path state-dir "tmux-socket"))
-(def pid-file (fs/path daemon-dir "handoffd.pid"))
-(def stop-file (fs/path daemon-dir "stop"))
-(def log-file (fs/path daemon-dir "handoffd.log"))
+(def state-dir nil)
+(def daemon-dir nil)
+(def roles-file nil)
+(def socket-file nil)
+(def pid-file nil)
+(def stop-file nil)
+(def log-file nil)
 (def stopping-flag (atom false))
+
+(defn configure!
+  ([] (configure! *command-line-args*))
+  ([args]
+   (let [once-flag (boolean (some #(= "--once" %) args))
+         root (first (remove #(= "--once" %) args))]
+     (when-not root
+       (usage))
+     (let [state (fs/path root ".swarmforge")
+           daemon (fs/path state "daemon")]
+       (alter-var-root #'once? (constantly once-flag))
+       (alter-var-root #'project-root (constantly root))
+       (alter-var-root #'state-dir (constantly state))
+       (alter-var-root #'daemon-dir (constantly daemon))
+       (alter-var-root #'roles-file (constantly (fs/path state "roles.tsv")))
+       (alter-var-root #'socket-file (constantly (fs/path state "tmux-socket")))
+       (alter-var-root #'pid-file (constantly (fs/path daemon "handoffd.pid")))
+       (alter-var-root #'stop-file (constantly (fs/path daemon "stop")))
+       (alter-var-root #'log-file (constantly (fs/path daemon "handoffd.log")))))))
 
 (defn now []
   (.format (java.time.format.DateTimeFormatter/ISO_INSTANT)
@@ -419,9 +436,11 @@
       (fs/delete-if-exists pid-file)
       (log! "stopped"))))
 
-(defn -main []
+(defn -main [& args]
+  (configure! (if (seq args) args *command-line-args*))
   (if once?
     (poll-once!)
     (run-daemon!)))
 
-(-main)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

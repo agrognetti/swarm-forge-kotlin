@@ -753,7 +753,7 @@
                   (str "1\told-a\tswarmforge-coder\tSwarmForge Coder\n"
                        "2\told-b\tswarmforge-cleaner\tSwarmForge Cleaner\n"))
       (write-file ids-file "old-a\nold-b\n")
-      (run {:dir root} (script "swarm-window-watchdog.bb") "--rewrite-window-id" "windows.tsv" "window-ids" "2" "new-b")
+      (run {:dir root} (script "swarm_window_watchdog.bb") "--rewrite-window-id" "windows.tsv" "window-ids" "2" "new-b")
       (let [state (slurp (str state-file))
             ids (slurp (str ids-file))]
         (is (str/includes? state "1\told-a\tswarmforge-coder\tSwarmForge Coder"))
@@ -1021,7 +1021,7 @@
     (is (not (zero? (:exit result))))
     (is (str/includes? (slurp (script "pack_web.bb")) "--serve"))
     (is (not (re-find #"--test-state\" \(test-state!" (slurp (script "pack_web.bb")))))
-    (is (str/includes? (slurp (script "pack_web_test.bb")) "--test-state"))))
+    (is (str/includes? (slurp (str (fs/path repo-root "test/swarmforge/pack_web_test.bb"))) "--test-state"))))
 
 (deftest get-swarm-forge-copies-only-swarmforge-owned-paths
   (let [host (tmp-dir)

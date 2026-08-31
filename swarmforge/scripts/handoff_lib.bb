@@ -100,31 +100,28 @@
   (let [[_ body] (str/split (slurp (str file)) #"\n\n" 2)]
     (or body "")))
 
+(defn rewrite-header-line [prefix value line]
+  (if (str/starts-with? line prefix) (str prefix value) line))
+
+(defn has-header? [prefix lines]
+  (boolean (some #(str/starts-with? % prefix) lines)))
+
+(defn append-header [headers prefix value]
+  (if (has-header? prefix headers)
+    headers
+    (conj (vec headers) (str prefix value))))
+
+(defn set-header-lines [lines field value]
+  (let [prefix (str field ": ")
+        headers (vec (take-while (complement str/blank?) lines))
+        rest-lines (drop-while (complement str/blank?) lines)
+        rewritten (mapv #(rewrite-header-line prefix value %) headers)]
+    (concat (append-header rewritten prefix value) rest-lines)))
+
 (defn set-header! [file field value]
   (let [file (fs/path file)
-        lines (str/split-lines (slurp (str file)))
-        prefix (str field ": ")
-        tmp (fs/create-temp-file {:dir (fs/parent file) :prefix ".headers."})
-        result (loop [remaining lines
-                      out []
-                      inserted? false
-                      replaced? false]
-                 (if-let [line (first remaining)]
-                   (cond
-                     (and (not inserted?) (str/blank? line))
-                     (recur (next remaining)
-                            (conj (cond-> out (not replaced?) (conj (str prefix value))) line)
-                            true
-                            replaced?)
-
-                     (and (not inserted?) (str/starts-with? line prefix))
-                     (recur (next remaining) (conj out (str prefix value)) inserted? true)
-
-                     :else
-                     (recur (next remaining) (conj out line) inserted? replaced?))
-                   (cond-> out
-                     (and (not inserted?) (not replaced?)) (conj (str prefix value)))))]
-    (spit (str tmp) (str (str/join "\n" result) "\n"))
+        tmp (fs/create-temp-file {:dir (fs/parent file) :prefix ".headers."})]
+    (spit (str tmp) (str (str/join "\n" (set-header-lines (str/split-lines (slurp (str file))) field value)) "\n"))
     (fs/move tmp file {:replace-existing true})))
 
 (defn print-task [file]
@@ -210,33 +207,37 @@
       (finally
         (fs/delete-tree lock-dir)))))
 
+(defn print-header-or-exit [value]
+  (if value (println value) (System/exit 1)))
+
+(defn unknown-lib-command [_]
+  (binding [*out* *err*]
+    (println "Usage: handoff_lib.bb <command> [args...]"))
+  (System/exit 2))
+
+(def lib-commands
+  {"role" (fn [_] (println (role)))
+   "state-dir" (fn [_] (println (state-dir)))
+   "inbox-dir" (fn [_] (println (inbox-dir)))
+   "project-root" (fn [_] (println (project-root)))
+   "role-known" (fn [args] (System/exit (if (role-known? (second args)) 0 1)))
+   "role-worktree-name" (fn [args] (println (role-worktree-name (second args))))
+   "role-receive-mode" (fn [args] (println (role-receive-mode (second args))))
+   "role-propagation" (fn [args] (println (role-propagation (second args))))
+   "timestamp" (fn [_] (println (timestamp)))
+   "id-timestamp" (fn [_] (println (id-timestamp)))
+   "valid-priority" (fn [args] (System/exit (if (valid-priority? (second args)) 0 1)))
+   "header-field" (fn [args] (print-header-or-exit (header-field (second args) (nth args 2))))
+   "body" (fn [args] (print (body (second args))))
+   "set-header" (fn [args] (set-header! (second args) (nth args 2) (nth args 3)))
+   "print-task" (fn [args] (print-task (second args)))
+   "print-batch" (fn [args] (print-batch (second args)))
+   "next-sequence" (fn [_] (println (next-sequence)))
+   "finish-done" (fn [_] (finish-done!))})
+
 (defn -main [& args]
   (try
-    (case (first args)
-      "role" (println (role))
-      "state-dir" (println (state-dir))
-      "inbox-dir" (println (inbox-dir))
-      "project-root" (println (project-root))
-      "role-known" (System/exit (if (role-known? (second args)) 0 1))
-      "role-worktree-name" (println (role-worktree-name (second args)))
-      "role-receive-mode" (println (role-receive-mode (second args)))
-      "role-propagation" (println (role-propagation (second args)))
-      "timestamp" (println (timestamp))
-      "id-timestamp" (println (id-timestamp))
-      "valid-priority" (System/exit (if (valid-priority? (second args)) 0 1))
-      "header-field" (if-let [value (header-field (second args) (nth args 2))]
-                       (println value)
-                       (System/exit 1))
-      "body" (print (body (second args)))
-      "set-header" (set-header! (second args) (nth args 2) (nth args 3))
-      "print-task" (print-task (second args))
-      "print-batch" (print-batch (second args))
-      "next-sequence" (println (next-sequence))
-      "finish-done" (finish-done!)
-      (do
-        (binding [*out* *err*]
-          (println "Usage: handoff_lib.bb <command> [args...]"))
-        (System/exit 2)))
+    ((get lib-commands (first args) unknown-lib-command) args)
     (catch clojure.lang.ExceptionInfo e
       (binding [*out* *err*]
         (println (ex-message e)))

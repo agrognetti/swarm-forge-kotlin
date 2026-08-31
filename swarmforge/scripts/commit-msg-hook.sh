@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bb "$SCRIPT_DIR/commit-msg-hook.bb" "$@"
+exec bb "$SCRIPT_DIR/commit_msg_hook.bb" "$@"

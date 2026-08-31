@@ -1,16 +1,44 @@
-{:paths ["test"]
+;; swarmforge/scripts/kotlin is on the path for one reason: sfk/support.clj
+;; declares (ns sfk.support) and lives in swarmforge/scripts/kotlin/sfk/. From
+;; swarmforge/scripts alone that name resolves to swarmforge/scripts/sfk/, which
+;; does not exist, and Cloverage dies in dependency ordering - before any
+;; --ns-exclude-regex is consulted, so excluding it is not a workaround.
+;; The Kotlin tools themselves add this directory at runtime; this line is what
+;; lets a static analysis see the same classpath they build for themselves.
+{:paths ["test" "swarmforge/scripts" "swarmforge/scripts/kotlin"]
  :tasks
- {test {:doc "Run helper tests and dashboard Playwright tests"
+ {;; Cloverage builds a java.net.URI out of each source path without encoding
+  ;; it, so a checkout under a directory whose name contains a space dies with
+  ;; "Illegal character in path at index N" while writing the report - after the
+  ;; whole analysis has run. Measured both ways: the same tree copied to a
+  ;; space-free path completes and prints a table. This is a Cloverage defect,
+  ;; not a SwarmForge one, so there is nothing here to fix; what is fixable is
+  ;; spending a minute reading a stack trace to learn it was the folder name.
+  ;; `bb test` is unaffected and needs no guard.
+  :init
+  (defn require-unspaced-path [task]
+    (let [dir (str (babashka.fs/cwd))]
+      (when (clojure.string/includes? dir " ")
+        (binding [*out* *err*]
+          (println (str "bb " task " cannot run from a path containing a space:"))
+          (println (str "  " dir))
+          (println "Cloverage fails on such a path while writing its report.")
+          (println "Run it from a checkout whose full path has no spaces."))
+        (System/exit 1))))
+
+  test {:doc "Run helper tests and dashboard Playwright tests"
         :task (do
                 (require 'clojure.test)
                 (require 'swarmforge.handoff-test)
                 (require 'swarmforge.script-test)
                 (require 'swarmforge.pack-ui-test)
                 (require 'swarmforge.kotlin-support-test)
+                (require 'swarmforge.coverage-in-process-test)
                 (let [{:keys [fail error]} (clojure.test/run-tests 'swarmforge.handoff-test
                                                                     'swarmforge.script-test
                                                                     'swarmforge.pack-ui-test
-                                                                    'swarmforge.kotlin-support-test)]
+                                                                    'swarmforge.kotlin-support-test
+                                                                    'swarmforge.coverage-in-process-test)]
                   (when (pos? (+ fail error))
                     (System/exit (+ fail error))))
                 (let [dir "test/dashboard"
@@ -34,4 +62,35 @@
                         (println "Dashboard tests failed. If Chromium is missing, install it with:")
                         (println "  cd test/dashboard && npx playwright install chromium"))
                       (System/exit (or (:exit result) 1)))))
-                (System/exit 0))}}}
+                (System/exit 0))}
+  coverage:bb {:doc "Cover Babashka scripts with Cloverage"
+               :extra-deps {io.github.unclebob/crap4clj
+                            {:git/url "https://github.com/unclebob/crap4clj.git"
+                             :git/sha "e068673a852a8142323ac680fa3366de65bc2227"}
+                            cloverage/cloverage
+                            {:git/url "https://github.com/cloverage/cloverage.git"
+                             :git/sha "61e3cac426e9907a9dd01c37597f85c71a57ff90"
+                             :deps/root "cloverage"}}
+               :requires ([crap4clj.bb-coverage :as coverage])
+               :task (do
+                       (require-unspaced-path "coverage:bb")
+                       (apply coverage/-main
+                            "-p" "swarmforge/scripts"
+                            "-s" "test"
+                            "--lcov"
+                            "--no-html"
+                            "--no-text"
+                            "--no-emma-xml"
+                            "--test-ns-regex" "swarmforge\\.coverage-in-process-test"
+                            *command-line-args*))}
+  crap {:doc "Run crap4clj on Babashka scripts"
+        :extra-deps {io.github.unclebob/crap4clj
+                     {:git/url "https://github.com/unclebob/crap4clj.git"
+                      :git/sha "e068673a852a8142323ac680fa3366de65bc2227"}}
+        :requires ([crap4clj.core :as core])
+        :task (do
+                (require-unspaced-path "crap")
+                (apply core/-main
+                     "--source-root" "swarmforge/scripts"
+                     "--coverage-command" "bb coverage:bb"
+                     *command-line-args*))}}}

@@ -51,7 +51,9 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .col-body{display:flex;flex-direction:column;align-items:flex-start;gap:8px;flex:1;min-height:100px;overflow:auto;padding:8px;background:rgba(255,255,255,.35);border:1px dashed #c5cbc2;border-radius:10px;width:max-content;min-width:var(--card-min-w)}
 .batch{display:flex;flex-direction:column;gap:0;width:max-content;min-width:var(--card-min-w)}
 .card{background:var(--card);border:1px solid #d0cbb8;border-radius:8px;padding:7px 8px;font-size:11px;width:max-content;max-width:var(--card-max-w);min-width:var(--card-min-w);min-height:var(--card-min-h);cursor:pointer;display:flex;flex-direction:column;gap:3px}
+.card-merging{background:#fff7c2;border-color:#e6d36a}
 .card:hover{border-color:#a89f7e}
+.card-merging:hover{border-color:#c9b24a}
 .card .title{font-weight:700;font-size:12px;display:flex;align-items:flex-start;gap:6px;width:100%;min-width:0}
 .card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block;flex:1;min-width:0}
 .audit-count{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;color:var(--muted);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
@@ -220,7 +222,9 @@ function cardEl(task, opts) {
   const card = document.createElement("article");
   card.className = thin ? "card card-thin" : "card";
   if (task.status === "REJECTED") card.classList.add("card-rejected");
+  if (task.merging) card.classList.add("card-merging");
   card.setAttribute("data-task-name", task.name || "");
+  if (task.merging) card.setAttribute("data-merging", "true");
   const title = document.createElement("div");
   title.className = "title";
   const name = document.createElement("span");
@@ -451,7 +455,28 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function fillDocWindow(win, name, text, comments) {
+function renderDiffLines(lines) {
+  return (lines || []).map((line) => {
+    const kind = line.type || "same";
+    const cls = kind === "add" ? "diff-add" : kind === "del" ? "diff-del" : "diff-same";
+    return "<span class=\"" + cls + "\">" + escapeHtml(line.text || "") + "\n</span>";
+  }).join("");
+}
+
+function renderHistory(history) {
+  if (!history || !history.length) {
+    return "<div class=\"hist-empty\">No previous comments</div>";
+  }
+  return history.map((item) => {
+    const at = escapeHtml(item.at || "");
+    const text = escapeHtml(item.text || "");
+    return "<div class=\"hist-sep\">" + at + "</div><div class=\"hist-block\">" + text + "</div>";
+  }).join("");
+}
+
+function fillDocWindow(win, name, data) {
+  const hasDiff = !!(data && data.has_diff);
+  const text = (data && data.text) || "";
   win.document.open();
   win.document.write(
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" +
@@ -459,23 +484,40 @@ function fillDocWindow(win, name, text, comments) {
     "<style>html,body{height:100%;margin:0;display:flex;flex-direction:column;background:#f8f8f5;color:#1e221f;font-family:ui-sans-serif,system-ui,sans-serif}" +
     "header{display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(180deg,#eceee8,#e0e3dc);border-bottom:1px solid #d5d9d2;flex:0 0 auto}" +
     "h1{margin:0;font-size:14px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    "label.toggle{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#68726c;white-space:nowrap}" +
     "pre{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace}" +
+    ".diff-add{color:#1a7f37;background:#e6ffed}.diff-del{color:#9b1c1c;background:#ffebe9}.diff-same{color:#1e221f}" +
+    "#doc-history{flex:0 0 28%;min-height:5rem;overflow:auto;padding:8px 12px;border-top:1px solid #d5d9d2;background:#f3f4f0;font:12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".hist-sep{margin:8px 0 4px;padding-top:6px;border-top:1px solid #c6cbc5;color:#68726c;font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700}" +
+    ".hist-sep:first-child{margin-top:0;padding-top:0;border-top:0}" +
+    ".hist-block{white-space:pre-wrap;overflow-wrap:anywhere}" +
+    ".hist-empty{color:#68726c;font-style:italic}" +
     ".comments{flex:0 0 auto;display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-top:1px solid #d5d9d2;background:#fffef9}" +
     "label{font-size:10px;text-transform:uppercase;font-weight:700;color:#68726c}" +
     "textarea{width:100%;min-height:7rem;max-height:40vh;overflow:auto;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere;word-wrap:break-word;border:1px solid #c6cbc5;border-radius:6px;padding:8px;font:12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
     ".actions{display:flex;gap:8px;justify-content:flex-end}" +
     "button{border:1px solid #9aa59e;background:#fff;padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer}" +
     "#doc-save{background:#3d5a45;border-color:#3d5a45;color:#fff}</style></head><body>" +
-    "<header><h1>" + escapeHtml(name) + "</h1></header>" +
-    "<pre>" + escapeHtml(text) + "</pre>" +
-    "<div class=\"comments\"><label for=\"doc-comments\">Comments</label>" +
-    "<textarea id=\"doc-comments\">" + escapeHtml(comments || "") + "</textarea>" +
+    "<header><h1>" + escapeHtml(name) + "</h1>" +
+    "<label class=\"toggle\"><input type=\"checkbox\" id=\"doc-diff\"" +
+    (hasDiff ? "" : " disabled") + "> Diff</label></header>" +
+    "<pre id=\"doc-body\">" + escapeHtml(text) + "</pre>" +
+    "<div id=\"doc-history\">" + renderHistory((data && data.history) || []) + "</div>" +
+    "<div class=\"comments\"><label for=\"doc-comments\">New comment</label>" +
+    "<textarea id=\"doc-comments\"></textarea>" +
     "<div class=\"actions\">" +
     "<button type=\"button\" id=\"doc-cancel\">Cancel</button>" +
     "<button type=\"button\" id=\"doc-save\">Save</button></div></div>" +
     "</body></html>"
   );
   win.document.close();
+  const box = win.document.getElementById("doc-diff");
+  const body = win.document.getElementById("doc-body");
+  if (box && body && hasDiff) {
+    box.onchange = () => {
+      body.innerHTML = box.checked ? renderDiffLines(data.lines) : escapeHtml(text);
+    };
+  }
 }
 
 function hasRemedialComments(item) {
@@ -501,13 +543,15 @@ function docMark(path, reviews) {
   return mark;
 }
 
-async function viewDoc(path, approvalId, comments) {
-  const res = await fetch("/doc?path=" + encodeURIComponent(path));
-  const text = res.ok ? await res.text() : "Not found";
+async function viewDoc(path, approvalId) {
+  const qs = "/api/doc?path=" + encodeURIComponent(path) +
+    (approvalId ? "&id=" + encodeURIComponent(approvalId) : "");
+  const res = await fetch(qs);
+  const data = res.ok ? await res.json() : {text: "Not found", history: [], has_diff: false, lines: []};
   const name = fileName(path);
-  const win = window.open("about:blank", "doc-" + encodeURIComponent(path), "resizable=yes,scrollbars=yes,width=780,height=560");
+  const win = window.open("about:blank", "doc-" + encodeURIComponent(path), "resizable=yes,scrollbars=yes,width=780,height=640");
   if (!win) return;
-  fillDocWindow(win, name, text, comments);
+  fillDocWindow(win, name, data);
   win.document.getElementById("doc-cancel").onclick = () => win.close();
   win.document.getElementById("doc-save").onclick = async () => {
     if (approvalId) {
@@ -547,7 +591,7 @@ function artifactMenu(paths, item) {
       event.stopPropagation();
       wrap.classList.remove("open");
       if (id) openDocMenus.delete(id);
-      viewDoc(path, id, Object.prototype.hasOwnProperty.call(reviews, path) ? reviews[path] : "");
+      viewDoc(path, id);
     };
     list.appendChild(choice);
   });

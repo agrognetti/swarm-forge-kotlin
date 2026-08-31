@@ -2,4 +2,4 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec bb "$SCRIPT_DIR/swarm-window-watchdog.bb" "$@"
+exec bb "$SCRIPT_DIR/swarm_window_watchdog.bb" "$@"

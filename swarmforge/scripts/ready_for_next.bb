@@ -5,7 +5,10 @@
             [babashka.process :as process]))
 
 (def script-dir (fs/parent *file*))
-(load-file (str (fs/path script-dir "handoff_lib.bb")))
+(try
+  (require 'handoff-lib)
+  (catch Exception _
+    (load-file (str (fs/path script-dir "handoff_lib.bb")))))
 
 (defn exit! [status message]
   (binding [*out* *err*]
@@ -26,4 +29,5 @@
     (catch clojure.lang.ExceptionInfo e
       (exit! (or (:exit (ex-data e)) 1) (ex-message e)))))
 
-(-main)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (-main))
