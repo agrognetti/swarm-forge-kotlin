@@ -20,9 +20,15 @@
 
 (def candidate-tasks ["koverXmlReport" "koverXmlReportDebug"])
 
+;; Measured on Kover 0.9.9: the task is
+;; kotlinx.kover.gradle.plugin.tasks.reports.KoverXmlTask. Matching the package
+;; rather than that class means a rename inside the plugin still passes, while a
+;; hand-written task wearing the same name does not.
+(def task-type-prefix "kotlinx.kover.")
+
 (defn report-task []
-  (or (first (filter s/has-task? candidate-tasks))
-      (s/require-task! "koverXmlReport" "org.jetbrains.kotlinx.kover" setup-snippet)))
+  (s/require-task! candidate-tasks "org.jetbrains.kotlinx.kover"
+                   task-type-prefix setup-snippet))
 
 (defn find-reports []
   (->> (fs/glob (s/worktree-root) (str s/any-depth "build/reports/kover/*.xml"))

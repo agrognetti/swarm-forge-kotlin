@@ -74,32 +74,42 @@
   ["This project is Kotlin Multiplatform with Android and iOS targets, so the"
    "wiring needs one extra decision that the plugin cannot make for you."
    ""
-   "PIT mutates JVM bytecode and needs a JVM test task. gradle-pitest-plugin"
-   "defaults mainSourceSets to sourceSets.main and testSourceSets to"
-   "sourceSets.test, which a KMP module does not have. Point them at the"
-   "compilation that produces JVM classfiles - normally the Android unit-test"
-   "compilation - using mainSourceSets and testSourceSets."
+   "Applying the plugin is not enough by itself. gradle-pitest-plugin creates its"
+   "extension and its task inside plugins.withType(JavaPlugin), so on a module"
+   "that never applies the java plugin - which is every KMP module, because KMP"
+   "rejects it - the plugin applies without error and registers no task at all."
+   ""
+   "PIT mutates JVM bytecode and needs a JVM test task. The plugin defaults"
+   "mainSourceSets to sourceSets.main and testSourceSets to sourceSets.test,"
+   "which a KMP module does not have. Point them at the compilation that produces"
+   "JVM classfiles - normally the Android host-test compilation - using"
+   "mainSourceSets and testSourceSets."
    ""
    "There is no maintained Android-specific pitest plugin. The plugin that used"
    "to fill that role is gone, so this wiring is project-specific by necessity."
    ""
+   "Registering a plain JavaExec task called 'pitest' is not a way around this."
+   "It is the project-local mutation proxy the constitution forbids, and this"
+   "tool checks the task's class precisely so it cannot be handed one."
+   ""
    "If your role does not own the build configuration, do not guess. Ask with:"
    "  pack_dashboard_request.sh clarify"])
 
-(defn require-pitest! []
-  (when-not (s/has-task? "pitest")
-    (apply s/die!
-           (concat
-            ["Gradle task 'pitest' does not exist in this project."
-             "The 'info.solidsoft.pitest' plugin is not applied."
-             ""
-             "Add this to the module's build script:"
-             ""
-             setup-snippet]
-            kmp-note
-            [""
-             "Do not substitute an estimate for the missing tool, and do not"
-             "write a project-local mutation proxy."]))))
+;; Measured from gradle-pitest-plugin-1.19.0.jar: the task is
+;; info.solidsoft.gradle.pitest.PitestTask. Matching the package rather than that
+;; one class means a rename inside the plugin still passes.
+(def task-type-prefix "info.solidsoft.gradle.pitest.")
+
+(defn require-pitest!
+  "The name of the real pitest task, or death with remediation text.
+
+  The check is on the task's class, not its name. A plain JavaExec called
+  'pitest' used to pass, and this tool would then run it and print its output as
+  a mutation measurement - a number no constitution tool produced."
+  []
+  (apply s/require-task!
+         ["pitest"] "info.solidsoft.pitest" task-type-prefix setup-snippet
+         kmp-note))
 
 ;; ------------------------------------------------------------------ exclusions
 
@@ -253,7 +263,17 @@
 (defn do-scan [exclusions]
   (s/heading "Mutation setup (mutate4kotlin --scan)")
   (println (format "pitest plugin %s, PIT %s" pitest-plugin-version pitest-core-version))
-  (println (format "pitest task present: %s" (if (s/has-task? "pitest") "yes" "NO")))
+  ;; Print the class, not a yes. "yes" was the whole defect: it was also the
+  ;; answer for a hand-written task that happened to carry the name.
+  (let [types (:types (s/task-info "pitest"))]
+    (println (format "pitest task: %s"
+                     (cond
+                       (nil? types) "absent"
+                       (some #(str/starts-with? % task-type-prefix) types)
+                       (str "present, " (str/join ", " types))
+                       (empty? types) "resolved, but Gradle reported no class"
+                       :else (str "SHADOWED by " (str/join ", " types)
+                                  " - not the plugin's task, mutation will refuse")))))
   (println (format "history file: %s (%s)"
                    (state-file "history.txt")
                    (if (fs/exists? (state-file "history.txt"))
@@ -288,57 +308,59 @@
         exclusions (parse-exclusions)]
     (when scan?
       (do-scan exclusions))
-    (require-pitest!)
-    (fs/create-dirs (fs/path (s/worktree-root) state-dirname))
-    (s/progress "running pitest with" workers "gradle worker(s)")
-    (s/gradle-or-die!
-     ["pitest" "--console=plain" "--max-workers" (str workers)]
-     (str "Mutation testing could not complete.\n"
-          "If the failure is a failing test, fix the test first: mutation\n"
-          "results over a red suite mean nothing.\n"
-          "If the failure is 'Minion exited abnormally', the JUnit 5 plugin\n"
-          "version does not match the project's JUnit version. See the\n"
-          "junit5PluginVersion line in the setup snippet."))
-    (let [reports (find-reports)]
-      (when (empty? reports)
-        (s/die! "PIT ran but produced no mutations.xml."
-                (str "Looked for build/reports/pitest/mutations.xml, timestamp"
-                     " directory or not, at any depth under " (s/worktree-root))
-                ""
-                "Add \"XML\" to outputFormats in the pitest block. The HTML report"
-                "alone is not machine readable."))
-      (let [ms (vec (mapcat mutations reports))
-            stats (summarize ms)
-            current (per-class ms)
-            manifest (read-manifest)]
-        (s/heading "Mutation testing (mutate4kotlin)")
-        (println (format "PIT %s   mutants: %d   reports: %d"
-                         pitest-core-version (:total stats) (count reports)))
-        (println (format "killed %d   survived %d   no-coverage %d   non-viable %d"
-                         (:killed stats) (:survived stats)
-                         (:no-coverage stats) (:non-viable stats)))
-        (println (format "mutation coverage %.1f%%  (killed / all mutants)"
-                         (:mutation-coverage stats)))
-        (println (format "test strength     %.1f%%  (killed / mutants on covered lines)"
-                         (:test-strength stats)))
-        (when (seq exclusions)
-          (println (format "exclusions in effect: %d (see %s)"
-                           (count exclusions) @exclusions-path)))
-        (println)
-        (print-survivors ms top)
-        (print-regressions current (:classes manifest))
-        (when update?
-          (let [path (write-manifest! (assoc manifest :classes current))]
-            (println)
-            (println (str "Manifest updated: " path))
-            (println "Commit it with your work so the next role inherits the record.")))
-        (println)
-        (println "Scope: commonMain via Android host tests, plus androidMain.")
-        (println "Not mutated: iosMain, Kotlin/Native, Swift. PIT works on JVM")
-        (println "bytecode and no maintained tool mutates Kotlin/Native.")
-        (println "Property-based tests are the adversarial check that does reach")
-        (println "iosMain; they are not a substitute for this measurement.")
-        ;; Survivors are work to do, not a broken tool.
-        (System/exit 0)))))
+    ;; Run the task the check vouched for, rather than the name it was asked
+    ;; about, so the thing verified and the thing executed cannot drift apart.
+    (let [task (require-pitest!)]
+      (fs/create-dirs (fs/path (s/worktree-root) state-dirname))
+      (s/progress "running pitest with" workers "gradle worker(s)")
+      (s/gradle-or-die!
+       [task "--console=plain" "--max-workers" (str workers)]
+       (str "Mutation testing could not complete.\n"
+            "If the failure is a failing test, fix the test first: mutation\n"
+            "results over a red suite mean nothing.\n"
+            "If the failure is 'Minion exited abnormally', the JUnit 5 plugin\n"
+            "version does not match the project's JUnit version. See the\n"
+            "junit5PluginVersion line in the setup snippet."))
+      (let [reports (find-reports)]
+        (when (empty? reports)
+          (s/die! "PIT ran but produced no mutations.xml."
+                  (str "Looked for build/reports/pitest/mutations.xml, timestamp"
+                       " directory or not, at any depth under " (s/worktree-root))
+                  ""
+                  "Add \"XML\" to outputFormats in the pitest block. The HTML report"
+                  "alone is not machine readable."))
+        (let [ms (vec (mapcat mutations reports))
+              stats (summarize ms)
+              current (per-class ms)
+              manifest (read-manifest)]
+          (s/heading "Mutation testing (mutate4kotlin)")
+          (println (format "PIT %s   mutants: %d   reports: %d"
+                           pitest-core-version (:total stats) (count reports)))
+          (println (format "killed %d   survived %d   no-coverage %d   non-viable %d"
+                           (:killed stats) (:survived stats)
+                           (:no-coverage stats) (:non-viable stats)))
+          (println (format "mutation coverage %.1f%%  (killed / all mutants)"
+                           (:mutation-coverage stats)))
+          (println (format "test strength     %.1f%%  (killed / mutants on covered lines)"
+                           (:test-strength stats)))
+          (when (seq exclusions)
+            (println (format "exclusions in effect: %d (see %s)"
+                             (count exclusions) @exclusions-path)))
+          (println)
+          (print-survivors ms top)
+          (print-regressions current (:classes manifest))
+          (when update?
+            (let [path (write-manifest! (assoc manifest :classes current))]
+              (println)
+              (println (str "Manifest updated: " path))
+              (println "Commit it with your work so the next role inherits the record.")))
+          (println)
+          (println "Scope: commonMain via Android host tests, plus androidMain.")
+          (println "Not mutated: iosMain, Kotlin/Native, Swift. PIT works on JVM")
+          (println "bytecode and no maintained tool mutates Kotlin/Native.")
+          (println "Property-based tests are the adversarial check that does reach")
+          (println "iosMain; they are not a substitute for this measurement.")
+          ;; Survivors are work to do, not a broken tool.
+          (System/exit 0))))))
 
 (apply -main *command-line-args*)

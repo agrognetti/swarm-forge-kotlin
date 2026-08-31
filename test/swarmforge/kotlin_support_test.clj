@@ -374,6 +374,174 @@
         (is (str/includes? out "No hand-written method scores at or above the threshold"))
         (is (str/includes? out "--include-generated"))))))
 
+;; --------------------------------------- a task's name is not its identity
+
+(defn- fake-gradlew!
+  "A stand-in wrapper that answers `help --task` and nothing else, so the task
+  identity check can be exercised without a real Gradle build.
+
+  The block it prints was copied from Gradle 9.1.0 on a real module: a parser
+  tested against invented text proves nothing about the text it has to read.
+  `types` is the seq of classes to report, `[]` to resolve the task while
+  printing no Type section, and nil to answer that no such task exists.
+
+  Every other invocation fails, so a tool that runs a task it did not verify
+  shows up in the output instead of passing quietly."
+  [root task types]
+  (let [path (fs/path root "gradlew")
+        not-found (str "echo \"> Task '$want' not found in root project"
+                       " 'fixture' and its subprojects.\" >&2\nexit 1\n")
+        body (if (nil? types)
+               not-found
+               (str "cat <<'SFKEOF'\n"
+                    "Detailed task information for " task "\n\n"
+                    "Path\n"
+                    "     :shared:" task "\n\n"
+                    (when (seq types)
+                      (str "Type\n"
+                           (str/join (for [t types]
+                                       (str "     " (last (str/split t #"\."))
+                                            " (" t ")\n")))
+                           "\n"))
+                    "Options\n"
+                    "     --rerun     Causes the task to be re-run even if up-to-date.\n\n"
+                    ;; Prose ending in a parenthesised class name. A pattern loose
+                    ;; enough to span sections would read this as the task's type.
+                    "Description\n"
+                    "     Runs it (org.example.NotAType)\n\n"
+                    "Group\n"
+                    "     verification\n"
+                    "SFKEOF\n"
+                    "exit 0\n"))]
+    (write! path
+            (str "#!/bin/sh\n"
+                 "want=\n"
+                 "for a in \"$@\"; do\n"
+                 "  if [ \"$flag\" = 1 ]; then want=$a; flag=; fi\n"
+                 "  if [ \"$a\" = --task ]; then flag=1; fi\n"
+                 "done\n"
+                 "if [ \"$want\" != \"" task "\" ]; then\n"
+                 not-found
+                 "fi\n"
+                 body))
+    (fs/set-posix-file-permissions path "rwxr-xr-x")))
+
+(def ^:private pitest-task "info.solidsoft.gradle.pitest.PitestTask")
+
+(deftest mutate4kotlin-refuses-a-look-alike-pitest-task
+  ;; The defect this replaces: the gate was `has-task? "pitest"`, which any
+  ;; JavaExec of that name satisfied. mutate4kotlin then ran it and printed its
+  ;; output as a mutation measurement - the project-local proxy the constitution
+  ;; forbids, produced without a single warning. Measured on the real project:
+  ;; `help --task pitest` exits 0 there for a hand-written task.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" ["org.gradle.api.tasks.JavaExec"])
+      (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
+        (is (not (zero? exit)))
+        (testing "it names what it found and what it wanted"
+          (is (str/includes? err "is not the info.solidsoft.pitest task"))
+          (is (str/includes? err "found:    org.gradle.api.tasks.JavaExec"))
+          (is (str/includes? err "expected: a class under info.solidsoft.gradle.pitest.")))
+        (testing "it quotes the rule rather than just refusing"
+          (is (str/includes? err "Do not invent project-local")))
+        (testing "and it stops before running anything"
+          (is (not (str/includes? err "Mutation testing could not complete"))))))))
+
+(deftest mutate4kotlin-runs-the-plugins-own-pitest-task
+  ;; The gate has to open for the real task, or the fix is just a new false
+  ;; negative. The fake fails every invocation that is not `help --task`, so
+  ;; reaching the run failure is the proof that the identity check passed.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" [pitest-task])
+      (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
+        (is (not (zero? exit)))
+        (is (str/includes? err "Mutation testing could not complete"))
+        (is (not (str/includes? err "is not the info.solidsoft.pitest task")))))))
+
+(deftest scan-names-the-class-behind-the-task-instead-of-answering-yes
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (testing "the plugin's own task"
+        (fake-gradlew! root "pitest" [pitest-task])
+        (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb" "--scan")]
+          (is (zero? exit))
+          (is (str/includes? out (str "pitest task: present, " pitest-task)))
+          (testing "and prose in the Description is not mistaken for a type"
+            (is (not (str/includes? out "NotAType"))))))
+      (testing "a look-alike is called one, in the scan that performs no build"
+        (fake-gradlew! root "pitest" ["org.gradle.api.tasks.JavaExec"])
+        (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb" "--scan")]
+          (is (zero? exit))
+          (is (str/includes? out "SHADOWED by org.gradle.api.tasks.JavaExec"))))
+      (testing "and an absent task is still reported as absent"
+        (fake-gradlew! root "pitest" nil)
+        (let [{:keys [exit out]} (run-tool root "mutate4kotlin.bb" "--scan")]
+          (is (zero? exit))
+          (is (str/includes? out "pitest task: absent")))))))
+
+(deftest mutate4kotlin-explains-why-a-kmp-module-has-no-pitest-task
+  ;; Verified in gradle-pitest-plugin-1.19.0.jar: apply() wires the extension and
+  ;; the task inside plugins.withType(JavaPlugin). KMP never applies the java
+  ;; plugin, so "add the plugin" on its own is advice that cannot work.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" nil)
+      (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
+        (is (not (zero? exit)))
+        (is (str/includes? err "does not exist in this project"))
+        (is (str/includes? err "plugins.withType(JavaPlugin)"))
+        (is (str/includes? err "registers no task at all"))))))
+
+(deftest a-task-whose-class-gradle-will-not-print-is-a-tool-defect
+  ;; The third state. Accepting would restore the defect; blaming the project
+  ;; would send an agent to change a build script that is fine.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" [])
+      (let [{:keys [exit err]} (run-tool root "mutate4kotlin.bb")]
+        (is (not (zero? exit)))
+        (is (str/includes? err "did not report its class"))
+        (is (str/includes? err "tool defect, not a"))))))
+
+(deftest the-weaker-question-still-answers-yes-to-a-look-alike
+  ;; This pins down why the gate moved off has-task?, so the two questions cannot
+  ;; be confused again. has-task? is still right for what aps-kotlin asks it -
+  ;; does the build have a task by this name - and it was always wrong as a claim
+  ;; about a plugin, which is what mutate4kotlin used it for.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "pitest" ["org.gradle.api.tasks.JavaExec"])
+      (let [{:keys [out]} (sh/sh "bb" "-cp" kotlin-scripts-dir "-e"
+                                 (str "(require '[sfk.support :as s])"
+                                      "(prn [(s/has-task? \"pitest\")"
+                                      "      (:types (s/task-info \"pitest\"))])")
+                                 :dir (str root))]
+        (testing "existence: yes, which is exactly how the defect got through"
+          (is (str/includes? out "true")))
+        (testing "identity: a class that belongs to Gradle, not to the plugin"
+          (is (str/includes? out "org.gradle.api.tasks.JavaExec"))
+          (is (not (str/includes? out "info.solidsoft"))))))))
+
+(deftest kover-refuses-a-look-alike-report-task
+  ;; Same gate, same reason: a hand-written koverXmlReport could write the XML
+  ;; that kover and crap4kotlin both read, and neither would know.
+  (with-tree ["settings.gradle.kts"]
+    (fn [root]
+      (init-repo! root)
+      (fake-gradlew! root "koverXmlReport" ["org.gradle.api.DefaultTask"])
+      (let [{:keys [exit err]} (run-tool root "kover.bb")]
+        (is (not (zero? exit)))
+        (is (str/includes? err "is not the org.jetbrains.kotlinx.kover task"))
+        (is (str/includes? err "expected: a class under kotlinx.kover."))))))
+
 ;; ------------------------------------------------------------- regression gate
 
 (deftest no-kotlin-tool-globs-with-a-depth-blind-prefix

@@ -124,26 +124,139 @@
             "Fix the build before reporting any number."))
     out))
 
-(defn has-task?
-  "True when Gradle can resolve the named task. Used to give a precise
-  'plugin not applied' message instead of a raw Gradle stack trace."
-  [task]
-  (let [{:keys [exit]} (p/sh [(gradlew) "-q" "help" "--task" task]
-                             {:dir (worktree-root) :out nil :err nil})]
-    (zero? exit)))
+(defn- task-types
+  "Every implementation class Gradle lists under a `Type` heading in the output
+  of `help --task`. Gradle prints one such heading per distinct implementation,
+  so a name that resolves in several projects can yield several classes.
 
-(defn require-task! [task plugin-id setup]
-  (when-not (has-task? task)
-    (die! (str "Gradle task '" task "' does not exist in this project.")
-          (str "The '" plugin-id "' plugin is not applied.")
-          ""
-          "Add it to the module's build script:"
-          ""
-          setup
-          ""
-          "This is a project build change. If your role does not own the build"
-          "configuration, ask the operator with pack_dashboard_request.sh clarify."
-          "Do not substitute an estimate for the missing tool.")))
+  Read line by line rather than with one regex over the whole text: the
+  Description and Group sections are free-form project prose, and a pattern
+  loose enough to span them would happily accept a class name out of a sentence."
+  [text]
+  (loop [[line & more] (str/split-lines text) in-type? false found []]
+    (cond
+      (nil? line) found
+      (re-matches #"Types?\s*" line) (recur more true found)
+      (str/blank? line) (recur more false found)
+      in-type? (recur more true
+                      (into found
+                            (map second)
+                            (re-seq #"\(([\w$]+(?:\.[\w$]+)+)\)" line)))
+      :else (recur more false found))))
+
+(defn task-info
+  "What Gradle knows about a task name, or nil when no task carries that name.
+  Returns {:types [fully.qualified.Class ...]}.
+
+  `help --task` prints the implementing class beside the name, so asking which
+  task stands behind a name costs exactly what asking whether one exists costs.
+  Existence is the weaker question, and it is not the one that matters: any
+  build script can register a task called `pitest`."
+  [task]
+  (let [out (java.io.StringWriter.)
+        {:keys [exit]} (p/sh [(gradlew) "-q" "help" "--task" task]
+                             {:dir (worktree-root) :out out :err out})]
+    (when (zero? exit)
+      {:types (task-types (str out))})))
+
+(defn has-task?
+  "True when Gradle can resolve the named task, whatever that task turns out to
+  be. Enough for choosing among test task names, which belong to the build
+  rather than to a plugin. Not enough to conclude that a plugin is wired and
+  will do the work its name promises: use require-task! for that."
+  [task]
+  (some? (task-info task)))
+
+(defn require-task!
+  "Return the first candidate task that exists and belongs to the plugin, or die
+  with remediation text. `type-prefix` is the plugin's package.
+
+  A task's name proves nothing on its own. Any build script can register a task
+  called `pitest` or `koverXmlReport`, and a tool that gates on the name alone
+  runs whatever it finds and reports the output as a measurement - the
+  project-local proxy the constitution forbids. Gradle names the implementing
+  class in the same call that answers the weaker question, so this asks about
+  the class instead.
+
+  The package rather than one class name, so that a class the plugin renames
+  keeps working while an unrelated task still does not.
+
+  `extra` lines are appended to the not-wired message by callers with more to
+  say about applying the plugin in this kind of project."
+  [candidates plugin-id type-prefix setup & extra]
+  ;; A vector of pairs, not a map: the candidate order is the caller's
+  ;; preference order and has to survive.
+  (let [found (vec (keep (fn [t] (when-let [info (task-info t)] [t (:types info)]))
+                         candidates))
+        mine? (fn [[_ types]] (some #(str/starts-with? % type-prefix) types))
+        [task types] (first found)
+        primary (first candidates)]
+    (cond
+      (some mine? found)
+      (first (first (filter mine? found)))
+
+      ;; Gradle resolved the name but told us nothing about it. Guessing either
+      ;; way would be worse than saying so: accepting restores the defect this
+      ;; check exists to prevent, and rejecting silently blames the project for a
+      ;; change in Gradle's output.
+      (and (seq found) (every? (comp empty? second) found))
+      (die! (str "Gradle resolved task '" task "' but did not report its class.")
+            ""
+            "This tool identifies a plugin's task by its implementing class,"
+            "because any build script can register a task by that name. Without"
+            "the class it cannot tell the plugin's task from a look-alike, and it"
+            "will not report a number it cannot attribute."
+            ""
+            "That most likely means the output format of this command changed:"
+            (str "  ./gradlew help --task " task)
+            ""
+            "Run it yourself and report what it prints to the operator with"
+            "pack_dashboard_request.sh clarify. This is a tool defect, not a"
+            "defect in the project build.")
+
+      ;; A name resolved, but to something else. Refusing is the whole point: the
+      ;; alternative is running a stranger's task and publishing its output.
+      (seq found)
+      (apply die!
+             (concat
+              [(str "Gradle task '" task "' exists, but it is not the "
+                    plugin-id " task.")
+               ""
+               (str "  found:    " (str/join ", " types))
+               (str "  expected: a class under " type-prefix)
+               ""
+               "Something in this build registers a task under that name. This tool"
+               "will not run it, because its output would be reported as a"
+               "measurement and the constitution forbids that:"
+               ""
+               "  \"Do not invent project-local CRAP, DRY, mutation, or coverage"
+               "   proxies.\""
+               ""
+               "See it for yourself:"
+               (str "  ./gradlew help --task " task)
+               ""
+               "Either apply the real plugin, or remove the task shadowing its name."
+               ""]
+              extra
+              [""
+               "If your role does not own the build configuration, ask the operator"
+               "with pack_dashboard_request.sh clarify."]))
+
+      :else
+      (apply die!
+             (concat
+              [(str "Gradle task '" primary "' does not exist in this project.")
+               (str "The '" plugin-id "' plugin is either not applied, or applied and")
+               "registering nothing in this module."
+               ""
+               "Add it to the module's build script:"
+               ""
+               setup]
+              extra
+              [""
+               "This is a project build change. If your role does not own the build"
+               "configuration, ask the operator with pack_dashboard_request.sh clarify."
+               "Do not substitute an estimate for the missing tool."])))))
 
 ;; ----------------------------------------------------------------- arg helper
 
